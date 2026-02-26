@@ -21,6 +21,82 @@
 
 using namespace sts;
 
+// ---- Step-by-step battle wrapper ----
+// Wraps BattleContext for Python access to combat decisions.
+struct PyBattleContext {
+    BattleContext bc;
+
+    explicit PyBattleContext(GameContext &gc) {
+        bc.init(gc);
+        bc.executeActions(); // process initial draw/relic triggers → PLAYER_NORMAL
+    }
+
+    void exitBattle(GameContext &gc) {
+        bc.exitBattle(gc);
+    }
+
+    // Play card at hand_idx, targeting monster at target_idx.
+    // If card doesn't require a target, target_idx is ignored.
+    // If card requires a target and target_idx == -1, auto-picks first targetable.
+    void playCard(int handIdx, int targetIdx) {
+        const auto card = bc.cards.hand[handIdx]; // copy before queue alters hand
+        int target = targetIdx;
+        if (target == -1) {
+            if (card.requiresTarget()) {
+                for (int i = 0; i < bc.monsters.monsterCount; ++i) {
+                    if (bc.monsters.arr[i].isTargetable()) { target = i; break; }
+                }
+            } else {
+                target = 0;
+            }
+        }
+        bc.addToBotCard(CardQueueItem(card, target, bc.player.energy));
+        bc.setState(InputState::EXECUTING_ACTIONS);
+        bc.executeActions();
+    }
+
+    void endTurn() {
+        bc.endTurn();
+        bc.setState(InputState::EXECUTING_ACTIONS);
+        bc.executeActions();
+    }
+
+    void drinkPotion(int potionIdx, int targetIdx) {
+        bc.drinkPotion(potionIdx, targetIdx);
+        bc.setState(InputState::EXECUTING_ACTIONS);
+        bc.executeActions();
+    }
+
+    void discardPotion(int potionIdx) {
+        bc.discardPotion(potionIdx);
+    }
+
+    // Handle in-combat card selection screens (Armaments, Discovery, Headbutt, etc.)
+    void chooseCardSelect(int idx) {
+        switch (bc.cardSelectInfo.cardSelectTask) {
+            case CardSelectTask::ARMAMENTS:   bc.chooseArmamentsCard(idx); break;
+            case CardSelectTask::DUAL_WIELD:  bc.chooseDualWieldCard(idx); break;
+            case CardSelectTask::EXHAUST_ONE: bc.chooseExhaustOneCard(idx); break;
+            case CardSelectTask::FORETHOUGHT: bc.chooseForethoughtCard(idx); break;
+            case CardSelectTask::HEADBUTT:    bc.chooseHeadbuttCard(idx); break;
+            case CardSelectTask::WARCRY:      bc.chooseWarcryCard(idx); break;
+            case CardSelectTask::DISCOVERY:   bc.chooseDiscoveryCard(bc.cardSelectInfo.cards[idx]); break;
+            case CardSelectTask::EXHUME:      bc.chooseExhumeCard(idx); break;
+            case CardSelectTask::RECYCLE:     bc.chooseRecycleCard(idx); break;
+            default: break;
+        }
+        bc.setState(InputState::EXECUTING_ACTIONS);
+        bc.executeActions();
+    }
+
+    std::string repr() const {
+        std::ostringstream oss;
+        oss << bc;
+        return oss.str();
+    }
+};
+// ---- end PyBattleContext ----
+
 PYBIND11_MODULE(slaythespire, m) {
     m.doc() = "pybind11 example plugin"; // optional module docstring
     m.def("play", &sts::py::play, "play Slay the Spire Console");
@@ -104,6 +180,200 @@ PYBIND11_MODULE(slaythespire, m) {
         .def_readwrite("shop_remove_count", &GameContext::shopRemoveCount)
         .def_readwrite("speedrun_pace", &GameContext::speedrunPace)
         .def_readwrite("note_for_yourself_card", &GameContext::noteForYourselfCard);
+
+    // ---- Step-by-step control methods ----
+
+    // Map navigation
+    gameContext
+        .def("transition_to_map_node", [](GameContext &gc, int x) {
+            gc.transitionToMapNode(x);
+        }, "Move to the map node at the given x coordinate")
+        .def("get_available_map_nodes", [](const GameContext &gc) {
+            std::vector<std::pair<int, Room>> result;
+            if (!gc.map) return result;
+            if (gc.curMapNodeY == 14) {
+                result.push_back({0, Room::BOSS});
+            } else if (gc.curMapNodeY == -1) {
+                for (const auto &node : gc.map->nodes[0]) {
+                    if (node.edgeCount > 0) result.push_back({node.x, node.room});
+                }
+            } else {
+                auto node = gc.map->getNode(gc.curMapNodeX, gc.curMapNodeY);
+                for (int i = 0; i < node.edgeCount; ++i) {
+                    int nx = node.edges[i];
+                    result.push_back({nx, gc.map->getNode(nx, gc.curMapNodeY + 1).room});
+                }
+            }
+            return result;
+        }, "Returns list of (x_coord, Room) pairs for valid next map nodes");
+
+    // Neow event (floor 0)
+    gameContext
+        .def("choose_neow_option", [](GameContext &gc, int idx) {
+            gc.chooseNeowOption(gc.info.neowRewards[idx]);
+        }, "Choose Neow bonus at game start (idx 0-3)")
+        .def_property_readonly("neow_options", [](const GameContext &gc) {
+            std::vector<std::string> opts;
+            for (int i = 0; i < 4; ++i) {
+                std::string s = Neow::bonusStrings[static_cast<int>(gc.info.neowRewards[i].r)];
+                std::string d = Neow::drawbackStrings[static_cast<int>(gc.info.neowRewards[i].d)];
+                if (!d.empty()) s += " / " + d;
+                opts.push_back(s);
+            }
+            return opts;
+        }, "Human-readable Neow option strings");
+
+    // Event screen
+    gameContext
+        .def_property_readonly("cur_event", [](const GameContext &gc) { return gc.curEvent; })
+        .def_property_readonly("event_data", [](const GameContext &gc) { return gc.info.eventData; },
+             "Phase/counter for multi-phase events (CURSED_TOME, DEAD_ADVENTURER, etc.)")
+        .def("choose_event_option", [](GameContext &gc, int idx) { gc.chooseEventOption(idx); },
+             "Choose event option by index")
+        .def("choose_match_and_keep", [](GameContext &gc, int idx1, int idx2) {
+            gc.chooseMatchAndKeepCards(idx1, idx2);
+        }, "Choose two cards in the Match and Keep event");
+
+    // Card select screen (non-combat: transform, remove, upgrade, etc.)
+    gameContext
+        .def_property_readonly("card_select_type",
+            [](const GameContext &gc) { return gc.info.selectScreenType; })
+        .def_property_readonly("card_select_count",
+            [](const GameContext &gc) { return gc.info.toSelectCount; })
+        .def_property_readonly("card_select_cards", [](const GameContext &gc) {
+            std::vector<Card> cards;
+            for (int i = 0; i < (int)gc.info.toSelectCards.size(); ++i)
+                cards.push_back(gc.info.toSelectCards[i].card);
+            return cards;
+        }, "Cards available to choose from on the card select screen")
+        .def("choose_card_select", [](GameContext &gc, int idx) {
+            gc.chooseSelectCardScreenOption(idx);
+        }, "Choose a card by index on the card select screen");
+
+    // Rest room (campfire)
+    gameContext.def("choose_campfire_option", [](GameContext &gc, int idx) {
+        gc.chooseCampfireOption(idx);
+    }, "0=Rest, 1=Smith(upgrade), 2=Recall(key), 3=Lift(girya), 4=Toke(remove), 5=Dig, 6=Skip");
+
+    // Treasure room
+    gameContext.def("choose_treasure_room_option", [](GameContext &gc, bool openChest) {
+        gc.chooseTreasureRoomOption(openChest);
+    }, "True to open chest, False to skip");
+
+    // Boss relic selection
+    gameContext
+        .def_property_readonly("boss_relics", [](const GameContext &gc) {
+            return std::vector<RelicId>{gc.info.bossRelics[0], gc.info.bossRelics[1], gc.info.bossRelics[2]};
+        }, "Three boss relics to choose from (after act boss)")
+        .def("choose_boss_relic", [](GameContext &gc, int idx) { gc.chooseBossRelic(idx); },
+             "Choose boss relic by index (0-2), or 3 to skip");
+
+    // Rewards screen
+    gameContext
+        .def_property_readonly("rewards_gold_count",
+            [](const GameContext &gc) { return gc.info.rewardsContainer.goldRewardCount; })
+        .def("rewards_gold", [](const GameContext &gc, int idx) {
+            return gc.info.rewardsContainer.gold[idx];
+        }, "Gold amount for reward at idx")
+        .def_property_readonly("rewards_card_count",
+            [](const GameContext &gc) { return gc.info.rewardsContainer.cardRewardCount; })
+        .def("rewards_cards", [](const GameContext &gc, int rewardIdx) {
+            std::vector<Card> cards;
+            const auto &cr = gc.info.rewardsContainer.cardRewards[rewardIdx];
+            for (int i = 0; i < (int)cr.size(); ++i) cards.push_back(cr[i]);
+            return cards;
+        }, "Cards available in reward slot rewardIdx")
+        .def_property_readonly("rewards_relic_count",
+            [](const GameContext &gc) { return gc.info.rewardsContainer.relicCount; })
+        .def("rewards_relic", [](const GameContext &gc, int idx) {
+            return gc.info.rewardsContainer.relics[idx];
+        }, "Relic at reward idx")
+        .def_property_readonly("rewards_potion_count",
+            [](const GameContext &gc) { return gc.info.rewardsContainer.potionCount; })
+        .def("rewards_potion", [](const GameContext &gc, int idx) {
+            return gc.info.rewardsContainer.potions[idx];
+        }, "Potion at reward idx")
+        .def_property_readonly("rewards_emerald_key",
+            [](const GameContext &gc) { return gc.info.rewardsContainer.emeraldKey; })
+        .def_property_readonly("rewards_sapphire_key",
+            [](const GameContext &gc) { return gc.info.rewardsContainer.sapphireKey; })
+        .def("take_reward_gold", [](GameContext &gc, int idx) {
+            gc.obtainGold(gc.info.rewardsContainer.gold[idx]);
+            gc.info.rewardsContainer.removeGoldReward(idx);
+        })
+        .def("take_reward_card", [](GameContext &gc, int rewardIdx, int cardIdx) {
+            gc.deck.obtain(gc, gc.info.rewardsContainer.cardRewards[rewardIdx][cardIdx]);
+            gc.info.rewardsContainer.removeCardReward(rewardIdx);
+        })
+        .def("take_reward_singing_bowl", [](GameContext &gc, int rewardIdx) {
+            gc.playerIncreaseMaxHp(2);
+            gc.info.rewardsContainer.removeCardReward(rewardIdx);
+        }, "Take +2 max HP instead of a card (requires Singing Bowl relic)")
+        .def("take_reward_relic", [](GameContext &gc, int idx) {
+            gc.obtainRelic(gc.info.rewardsContainer.relics[idx]);
+            if (gc.info.rewardsContainer.sapphireKey && idx == gc.info.rewardsContainer.relicCount - 1)
+                gc.info.rewardsContainer.sapphireKey = false;
+            gc.info.rewardsContainer.removeRelicReward(idx);
+        })
+        .def("take_reward_potion", [](GameContext &gc, int idx) {
+            gc.obtainPotion(gc.info.rewardsContainer.potions[idx]);
+            gc.info.rewardsContainer.removePotionReward(idx);
+        })
+        .def("take_reward_emerald_key", [](GameContext &gc) {
+            gc.obtainKey(Key::EMERALD_KEY);
+            gc.info.rewardsContainer.emeraldKey = false;
+        })
+        .def("take_reward_sapphire_key", [](GameContext &gc) {
+            if (gc.info.rewardsContainer.relicCount > 0)
+                gc.info.rewardsContainer.removeRelicReward(gc.info.rewardsContainer.relicCount - 1);
+            gc.obtainKey(Key::SAPPHIRE_KEY);
+            gc.info.rewardsContainer.sapphireKey = false;
+        })
+        .def("proceed", [](GameContext &gc) { gc.regainControl(); },
+             "Skip remaining rewards and proceed to map");
+
+    // Shop
+    gameContext
+        .def("shop_cards", [](const GameContext &gc) {
+            std::vector<Card> cards;
+            for (int i = 0; i < 7; ++i) cards.push_back(gc.info.shop.cards[i]);
+            return cards;
+        }, "List of 7 shop cards (CardId::INVALID means sold out)")
+        .def("shop_card_price", [](const GameContext &gc, int idx) {
+            return gc.info.shop.cardPrice(idx);
+        }, "Price of shop card at idx (-1 if unavailable)")
+        .def("shop_relics", [](const GameContext &gc) {
+            return std::vector<RelicId>{gc.info.shop.relics[0], gc.info.shop.relics[1], gc.info.shop.relics[2]};
+        })
+        .def("shop_relic_price", [](const GameContext &gc, int idx) {
+            return gc.info.shop.relicPrice(idx);
+        }, "Price of shop relic at idx (-1 if unavailable)")
+        .def("shop_potions", [](const GameContext &gc) {
+            return std::vector<Potion>{gc.info.shop.potions[0], gc.info.shop.potions[1], gc.info.shop.potions[2]};
+        })
+        .def("shop_potion_price", [](const GameContext &gc, int idx) {
+            return gc.info.shop.potionPrice(idx);
+        })
+        .def_property_readonly("shop_remove_card_cost",
+            [](const GameContext &gc) { return gc.info.shop.removeCost; },
+            "Cost to remove a card (-1 if unavailable)")
+        .def("shop_buy_card", [](GameContext &gc, int idx) { gc.info.shop.buyCard(gc, idx); })
+        .def("shop_buy_relic", [](GameContext &gc, int idx) { gc.info.shop.buyRelic(gc, idx); })
+        .def("shop_buy_potion", [](GameContext &gc, int idx) { gc.info.shop.buyPotion(gc, idx); })
+        .def("shop_buy_remove", [](GameContext &gc) { gc.info.shop.buyCardRemove(gc); })
+        .def("proceed_from_shop", [](GameContext &gc) { gc.screenState = ScreenState::MAP_SCREEN; },
+             "Leave the shop and return to the map");
+
+    // Potions (on GameContext, usable between battles)
+    gameContext
+        .def_property_readonly("potion_count",
+            [](const GameContext &gc) { return gc.potionCount; })
+        .def_property_readonly("potion_capacity",
+            [](const GameContext &gc) { return gc.potionCapacity; })
+        .def("get_potion", [](const GameContext &gc, int idx) { return gc.potions[idx]; },
+             "Potion enum value at slot idx")
+        .def("drink_potion", [](GameContext &gc, int idx) { gc.drinkPotionAtIdx(idx); })
+        .def("discard_potion", [](GameContext &gc, int idx) { gc.discardPotionAtIdx(idx); });
 
     pybind11::class_<RelicInstance> relic(m, "Relic");
     relic.def_readwrite("id", &RelicInstance::id)
@@ -827,6 +1097,223 @@ PYBIND11_MODULE(slaythespire, m) {
         .value("CIRCLET", RelicId::CIRCLET)
         .value("RED_CIRCLET", RelicId::RED_CIRCLET)
         .value("INVALID", RelicId::INVALID);
+
+    // ---- BattleContext class ----
+    pybind11::class_<PyBattleContext>(m, "BattleContext")
+        .def(pybind11::init<GameContext&>(),
+             "Initialize a battle from the current GameContext (must be in BATTLE screen state)")
+        .def("exit_battle", &PyBattleContext::exitBattle,
+             "Apply battle results back to GameContext (call after outcome != UNDECIDED)")
+        .def("play_card", &PyBattleContext::playCard,
+             pybind11::arg("hand_idx"), pybind11::arg("target_idx") = -1,
+             "Play card at hand_idx. target_idx=-1 auto-picks first targetable monster.")
+        .def("end_turn", &PyBattleContext::endTurn,
+             "End player turn; monsters act automatically via executeActions()")
+        .def("drink_potion", &PyBattleContext::drinkPotion,
+             pybind11::arg("potion_idx"), pybind11::arg("target_idx") = 0)
+        .def("discard_potion", &PyBattleContext::discardPotion)
+        .def("choose_card_select", &PyBattleContext::chooseCardSelect,
+             "Handle in-combat CARD_SELECT state (Armaments, Discovery, Headbutt, etc.)")
+        // Outcome / state
+        .def_property_readonly("outcome",
+            [](const PyBattleContext &pbc) { return pbc.bc.outcome; })
+        .def_property_readonly("input_state",
+            [](const PyBattleContext &pbc) { return pbc.bc.inputState; })
+        .def_property_readonly("turn",
+            [](const PyBattleContext &pbc) { return pbc.bc.turn; })
+        .def_property_readonly("card_select_task",
+            [](const PyBattleContext &pbc) { return pbc.bc.cardSelectInfo.cardSelectTask; },
+            "When input_state==CARD_SELECT, indicates what kind of selection is needed")
+        // Player
+        .def_property_readonly("player_cur_hp",
+            [](const PyBattleContext &pbc) { return pbc.bc.player.curHp; })
+        .def_property_readonly("player_max_hp",
+            [](const PyBattleContext &pbc) { return pbc.bc.player.maxHp; })
+        .def_property_readonly("player_block",
+            [](const PyBattleContext &pbc) { return pbc.bc.player.block; })
+        .def_property_readonly("player_energy",
+            [](const PyBattleContext &pbc) { return pbc.bc.player.energy; })
+        .def_property_readonly("player_strength",
+            [](const PyBattleContext &pbc) { return pbc.bc.player.strength; })
+        .def_property_readonly("player_dexterity",
+            [](const PyBattleContext &pbc) { return pbc.bc.player.dexterity; })
+        // Monsters
+        .def_property_readonly("monster_count",
+            [](const PyBattleContext &pbc) { return pbc.bc.monsters.monsterCount; })
+        .def("monster_cur_hp",
+            [](const PyBattleContext &pbc, int idx) { return pbc.bc.monsters.arr[idx].curHp; })
+        .def("monster_max_hp",
+            [](const PyBattleContext &pbc, int idx) { return pbc.bc.monsters.arr[idx].maxHp; })
+        .def("monster_block",
+            [](const PyBattleContext &pbc, int idx) { return pbc.bc.monsters.arr[idx].block; })
+        .def("is_monster_alive",
+            [](const PyBattleContext &pbc, int idx) { return pbc.bc.monsters.arr[idx].isAlive(); })
+        .def("is_monster_targetable",
+            [](const PyBattleContext &pbc, int idx) { return pbc.bc.monsters.arr[idx].isTargetable(); })
+        // Hand / card piles
+        .def_property_readonly("hand_size",
+            [](const PyBattleContext &pbc) { return pbc.bc.cards.cardsInHand; })
+        .def_property_readonly("draw_pile_size",
+            [](const PyBattleContext &pbc) { return (int)pbc.bc.cards.drawPile.size(); })
+        .def_property_readonly("discard_pile_size",
+            [](const PyBattleContext &pbc) { return (int)pbc.bc.cards.discardPile.size(); })
+        .def("hand_card_id",
+            [](const PyBattleContext &pbc, int idx) { return pbc.bc.cards.hand[idx].getId(); })
+        .def("hand_card_upgraded",
+            [](const PyBattleContext &pbc, int idx) { return pbc.bc.cards.hand[idx].isUpgraded(); })
+        .def("hand_card_cost",
+            [](const PyBattleContext &pbc, int idx) { return (int)pbc.bc.cards.hand[idx].costForTurn; })
+        .def("hand_card_requires_target",
+            [](const PyBattleContext &pbc, int idx) { return pbc.bc.cards.hand[idx].requiresTarget(); })
+        .def("can_play_card",
+            [](const PyBattleContext &pbc, int idx) {
+                return pbc.bc.cards.hand[idx].canUseOnAnyTarget(pbc.bc);
+            })
+        // Potions (in combat)
+        .def_property_readonly("potion_count",
+            [](const PyBattleContext &pbc) { return pbc.bc.potionCount; })
+        .def("get_potion",
+            [](const PyBattleContext &pbc, int idx) { return pbc.bc.potions[idx]; })
+        .def("__repr__", &PyBattleContext::repr);
+
+    // ---- New enums ----
+
+    pybind11::enum_<Outcome>(m, "BattleOutcome")
+        .value("UNDECIDED", Outcome::UNDECIDED)
+        .value("PLAYER_VICTORY", Outcome::PLAYER_VICTORY)
+        .value("PLAYER_LOSS", Outcome::PLAYER_LOSS);
+
+    pybind11::enum_<InputState>(m, "InputState")
+        .value("EXECUTING_ACTIONS", InputState::EXECUTING_ACTIONS)
+        .value("PLAYER_NORMAL", InputState::PLAYER_NORMAL)
+        .value("CARD_SELECT", InputState::CARD_SELECT);
+
+    pybind11::enum_<CardSelectScreenType>(m, "CardSelectScreenType")
+        .value("INVALID", CardSelectScreenType::INVALID)
+        .value("TRANSFORM", CardSelectScreenType::TRANSFORM)
+        .value("TRANSFORM_UPGRADE", CardSelectScreenType::TRANSFORM_UPGRADE)
+        .value("UPGRADE", CardSelectScreenType::UPGRADE)
+        .value("REMOVE", CardSelectScreenType::REMOVE)
+        .value("DUPLICATE", CardSelectScreenType::DUPLICATE)
+        .value("OBTAIN", CardSelectScreenType::OBTAIN)
+        .value("BOTTLE", CardSelectScreenType::BOTTLE)
+        .value("BONFIRE_SPIRITS", CardSelectScreenType::BONFIRE_SPIRITS);
+
+    pybind11::enum_<CardSelectTask>(m, "CardSelectTask")
+        .value("INVALID", CardSelectTask::INVALID)
+        .value("ARMAMENTS", CardSelectTask::ARMAMENTS)
+        .value("CODEX", CardSelectTask::CODEX)
+        .value("DISCOVERY", CardSelectTask::DISCOVERY)
+        .value("DUAL_WIELD", CardSelectTask::DUAL_WIELD)
+        .value("EXHAUST_ONE", CardSelectTask::EXHAUST_ONE)
+        .value("EXHAUST_MANY", CardSelectTask::EXHAUST_MANY)
+        .value("EXHUME", CardSelectTask::EXHUME)
+        .value("FORETHOUGHT", CardSelectTask::FORETHOUGHT)
+        .value("GAMBLE", CardSelectTask::GAMBLE)
+        .value("HEADBUTT", CardSelectTask::HEADBUTT)
+        .value("HOLOGRAM", CardSelectTask::HOLOGRAM)
+        .value("LIQUID_MEMORIES_POTION", CardSelectTask::LIQUID_MEMORIES_POTION)
+        .value("WARCRY", CardSelectTask::WARCRY);
+
+    pybind11::enum_<Event>(m, "Event")
+        .value("INVALID", Event::INVALID)
+        .value("NEOW", Event::NEOW)
+        .value("OMINOUS_FORGE", Event::OMINOUS_FORGE)
+        .value("PLEADING_VAGRANT", Event::PLEADING_VAGRANT)
+        .value("ANCIENT_WRITING", Event::ANCIENT_WRITING)
+        .value("OLD_BEGGAR", Event::OLD_BEGGAR)
+        .value("BIG_FISH", Event::BIG_FISH)
+        .value("BONFIRE_SPIRITS", Event::BONFIRE_SPIRITS)
+        .value("CURSED_TOME", Event::CURSED_TOME)
+        .value("DEAD_ADVENTURER", Event::DEAD_ADVENTURER)
+        .value("DESIGNER_IN_SPIRE", Event::DESIGNER_IN_SPIRE)
+        .value("AUGMENTER", Event::AUGMENTER)
+        .value("DUPLICATOR", Event::DUPLICATOR)
+        .value("FACE_TRADER", Event::FACE_TRADER)
+        .value("FALLING", Event::FALLING)
+        .value("FORGOTTEN_ALTAR", Event::FORGOTTEN_ALTAR)
+        .value("THE_DIVINE_FOUNTAIN", Event::THE_DIVINE_FOUNTAIN)
+        .value("GHOSTS", Event::GHOSTS)
+        .value("GOLDEN_IDOL", Event::GOLDEN_IDOL)
+        .value("GOLDEN_SHRINE", Event::GOLDEN_SHRINE)
+        .value("WING_STATUE", Event::WING_STATUE)
+        .value("KNOWING_SKULL", Event::KNOWING_SKULL)
+        .value("LAB", Event::LAB)
+        .value("THE_SSSSSERPENT", Event::THE_SSSSSERPENT)
+        .value("LIVING_WALL", Event::LIVING_WALL)
+        .value("MASKED_BANDITS", Event::MASKED_BANDITS)
+        .value("MATCH_AND_KEEP", Event::MATCH_AND_KEEP)
+        .value("MINDBLOOM", Event::MINDBLOOM)
+        .value("HYPNOTIZING_COLORED_MUSHROOMS", Event::HYPNOTIZING_COLORED_MUSHROOMS)
+        .value("MYSTERIOUS_SPHERE", Event::MYSTERIOUS_SPHERE)
+        .value("THE_NEST", Event::THE_NEST)
+        .value("NLOTH", Event::NLOTH)
+        .value("NOTE_FOR_YOURSELF", Event::NOTE_FOR_YOURSELF)
+        .value("PURIFIER", Event::PURIFIER)
+        .value("SCRAP_OOZE", Event::SCRAP_OOZE)
+        .value("SECRET_PORTAL", Event::SECRET_PORTAL)
+        .value("SENSORY_STONE", Event::SENSORY_STONE)
+        .value("SHINING_LIGHT", Event::SHINING_LIGHT)
+        .value("THE_CLERIC", Event::THE_CLERIC)
+        .value("THE_JOUST", Event::THE_JOUST)
+        .value("THE_LIBRARY", Event::THE_LIBRARY)
+        .value("THE_MAUSOLEUM", Event::THE_MAUSOLEUM)
+        .value("THE_MOAI_HEAD", Event::THE_MOAI_HEAD)
+        .value("THE_WOMAN_IN_BLUE", Event::THE_WOMAN_IN_BLUE)
+        .value("TOMB_OF_LORD_RED_MASK", Event::TOMB_OF_LORD_RED_MASK)
+        .value("TRANSMORGRIFIER", Event::TRANSMORGRIFIER)
+        .value("UPGRADE_SHRINE", Event::UPGRADE_SHRINE)
+        .value("VAMPIRES", Event::VAMPIRES)
+        .value("WE_MEET_AGAIN", Event::WE_MEET_AGAIN)
+        .value("WHEEL_OF_CHANGE", Event::WHEEL_OF_CHANGE)
+        .value("WINDING_HALLS", Event::WINDING_HALLS)
+        .value("WORLD_OF_GOOP", Event::WORLD_OF_GOOP);
+
+    pybind11::enum_<Potion>(m, "Potion")
+        .value("INVALID", Potion::INVALID)
+        .value("EMPTY_POTION_SLOT", Potion::EMPTY_POTION_SLOT)
+        .value("AMBROSIA", Potion::AMBROSIA)
+        .value("ANCIENT_POTION", Potion::ANCIENT_POTION)
+        .value("ATTACK_POTION", Potion::ATTACK_POTION)
+        .value("BLESSING_OF_THE_FORGE", Potion::BLESSING_OF_THE_FORGE)
+        .value("BLOCK_POTION", Potion::BLOCK_POTION)
+        .value("BLOOD_POTION", Potion::BLOOD_POTION)
+        .value("BOTTLED_MIRACLE", Potion::BOTTLED_MIRACLE)
+        .value("COLORLESS_POTION", Potion::COLORLESS_POTION)
+        .value("CULTIST_POTION", Potion::CULTIST_POTION)
+        .value("CUNNING_POTION", Potion::CUNNING_POTION)
+        .value("DEXTERITY_POTION", Potion::DEXTERITY_POTION)
+        .value("DISTILLED_CHAOS", Potion::DISTILLED_CHAOS)
+        .value("DUPLICATION_POTION", Potion::DUPLICATION_POTION)
+        .value("ELIXIR_POTION", Potion::ELIXIR_POTION)
+        .value("ENERGY_POTION", Potion::ENERGY_POTION)
+        .value("ENTROPIC_BREW", Potion::ENTROPIC_BREW)
+        .value("ESSENCE_OF_DARKNESS", Potion::ESSENCE_OF_DARKNESS)
+        .value("ESSENCE_OF_STEEL", Potion::ESSENCE_OF_STEEL)
+        .value("EXPLOSIVE_POTION", Potion::EXPLOSIVE_POTION)
+        .value("FAIRY_POTION", Potion::FAIRY_POTION)
+        .value("FEAR_POTION", Potion::FEAR_POTION)
+        .value("FIRE_POTION", Potion::FIRE_POTION)
+        .value("FLEX_POTION", Potion::FLEX_POTION)
+        .value("FOCUS_POTION", Potion::FOCUS_POTION)
+        .value("FRUIT_JUICE", Potion::FRUIT_JUICE)
+        .value("GAMBLERS_BREW", Potion::GAMBLERS_BREW)
+        .value("GHOST_IN_A_JAR", Potion::GHOST_IN_A_JAR)
+        .value("HEART_OF_IRON", Potion::HEART_OF_IRON)
+        .value("LIQUID_BRONZE", Potion::LIQUID_BRONZE)
+        .value("LIQUID_MEMORIES", Potion::LIQUID_MEMORIES)
+        .value("POISON_POTION", Potion::POISON_POTION)
+        .value("POTION_OF_CAPACITY", Potion::POTION_OF_CAPACITY)
+        .value("POWER_POTION", Potion::POWER_POTION)
+        .value("REGEN_POTION", Potion::REGEN_POTION)
+        .value("SKILL_POTION", Potion::SKILL_POTION)
+        .value("SMOKE_BOMB", Potion::SMOKE_BOMB)
+        .value("SNECKO_OIL", Potion::SNECKO_OIL)
+        .value("SPEED_POTION", Potion::SPEED_POTION)
+        .value("STANCE_POTION", Potion::STANCE_POTION)
+        .value("STRENGTH_POTION", Potion::STRENGTH_POTION)
+        .value("SWIFT_POTION", Potion::SWIFT_POTION)
+        .value("WEAK_POTION", Potion::WEAK_POTION);
 
 #ifdef VERSION_INFO
     m.attr("__version__") = MACRO_STRINGIFY(VERSION_INFO);
