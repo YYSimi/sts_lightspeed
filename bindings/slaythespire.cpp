@@ -1150,6 +1150,32 @@ PYBIND11_MODULE(slaythespire, m) {
             [](const PyBattleContext &pbc, int idx) { return pbc.bc.monsters.arr[idx].isAlive(); })
         .def("is_monster_targetable",
             [](const PyBattleContext &pbc, int idx) { return pbc.bc.monsters.arr[idx].isTargetable(); })
+        // Monster intent & status
+        .def("monster_is_attacking",
+            [](const PyBattleContext &pbc, int idx) { return pbc.bc.monsters.arr[idx].isAttacking(); })
+        .def("monster_move_damage",
+            [](const PyBattleContext &pbc, int idx) {
+                auto &m = pbc.bc.monsters.arr[idx];
+                if (!m.isAttacking()) return 0;
+                auto dInfo = m.getMoveBaseDamage(pbc.bc);
+                return m.calculateDamageToPlayer(pbc.bc, dInfo.damage);
+            })
+        .def("monster_move_hits",
+            [](const PyBattleContext &pbc, int idx) {
+                auto &m = pbc.bc.monsters.arr[idx];
+                if (!m.isAttacking()) return 0;
+                return m.getMoveBaseDamage(pbc.bc).attackCount;
+            })
+        .def("monster_strength",
+            [](const PyBattleContext &pbc, int idx) { return pbc.bc.monsters.arr[idx].strength; })
+        .def("monster_weak",
+            [](const PyBattleContext &pbc, int idx) { return pbc.bc.monsters.arr[idx].weak; })
+        .def("monster_vulnerable",
+            [](const PyBattleContext &pbc, int idx) { return pbc.bc.monsters.arr[idx].vulnerable; })
+        .def("monster_id",
+            [](const PyBattleContext &pbc, int idx) { return (int)pbc.bc.monsters.arr[idx].id; })
+        .def("monster_move_id",
+            [](const PyBattleContext &pbc, int idx) { return (int)pbc.bc.monsters.arr[idx].moveHistory[0]; })
         // Hand / card piles
         .def_property_readonly("hand_size",
             [](const PyBattleContext &pbc) { return pbc.bc.cards.cardsInHand; })
