@@ -310,19 +310,26 @@ Potion sts::returnRandomPotionOfRarity(Random &potionRng, PotionRarity rarity, C
     // this is dumb.
     Potion temp = getRandomPotion(potionRng, cc);
     bool spamCheck = limited;
-    while(potionRarities[static_cast<int>(temp)] != rarity || spamCheck) {
+    int safetyCounter = 0;
+    while(static_cast<int>(temp) < 42 && (potionRarities[static_cast<int>(temp)] != rarity || spamCheck)) {
         spamCheck = limited;
         temp = getRandomPotion(potionRng, cc);
         if (temp != Potion::FRUIT_JUICE) {
             spamCheck = false;
+        }
+        if (++safetyCounter > 200) {
+            return Potion::BLOCK_POTION; // bail out to prevent infinite loop
         }
     }
     return temp;
 }
 
 Potion sts::getRandomPotion(Random &potionRng, CharacterClass cc) {
+    int ccIdx = static_cast<int>(cc);
+    if (ccIdx < 0 || ccIdx > 3) ccIdx = 0; // bounds check
     int idx = potionRng.random(PotionPool::poolSize-1); // all characters have 33 possible potions
-    return PotionPool::getPotionForClass(cc, idx);
+    if (idx < 0 || idx >= PotionPool::poolSize) idx = 0; // bounds check
+    return PotionPool::getPotionForClass(static_cast<CharacterClass>(ccIdx), idx);
 }
 
 

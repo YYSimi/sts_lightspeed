@@ -46,6 +46,49 @@ void search::BattleScumSearcher2::step() {
     BattleContext curState;
     curState = *rootState;
 
+    if (fairRng) {
+        auto simSeed = rootState->seed + rootState->floorNum * 1000000ULL + simCounter;
+        curState.aiRng = Random(simSeed + 1);
+        curState.cardRandomRng = Random(simSeed + 2);
+        curState.miscRng = Random(simSeed + 3);
+        curState.monsterHpRng = Random(simSeed + 4);
+        curState.potionRng = Random(simSeed + 5);
+        curState.shuffleRng = Random(simSeed + 6);
+        ++simCounter;
+
+        // Fair RNG: flat search at root only. Don't build/traverse a tree
+        // because child nodes were expanded under different RNG states and
+        // actions stored in edges may be invalid for the current RNG.
+        if (isTerminalState(curState)) {
+            updateFromPlayout(searchStack, actionStack, curState);
+            return;
+        }
+
+        if (root.edges.empty()) {
+            ++simulationIdx;
+            enumerateActionsForNode(root, curState);
+        }
+
+        // Select action at root by UCB1 (if enough sims) or random
+        int selectIdx;
+        if (root.simulationCount < static_cast<int64_t>(root.edges.size())) {
+            // First pass: try each action at least once
+            selectIdx = static_cast<int>(root.simulationCount % root.edges.size());
+        } else {
+            selectIdx = selectBestEdgeToSearch(root);
+        }
+
+        auto &edgeTaken = root.edges[selectIdx];
+        edgeTaken.action.execute(curState);
+        actionStack.push_back(edgeTaken.action);
+        searchStack.push_back(&edgeTaken.node);
+
+        // Random playout from here
+        playoutRandom(curState, actionStack);
+        updateFromPlayout(searchStack, actionStack, curState);
+        return;
+    }
+
     while (true) {
         auto &curNode = *searchStack.back();
 
@@ -177,7 +220,9 @@ void search::BattleScumSearcher2::enumerateActionsForNode(search::BattleScumSear
     switch (bc.inputState) {
         case InputState::PLAYER_NORMAL:
             enumerateCardActions(node, bc);
-            enumeratePotionActions(node, bc);
+            if (searchPotions) {
+                enumeratePotionActions(node, bc);
+            }
             node.edges.push_back({Action(ActionType::END_TURN)});
             break;
 

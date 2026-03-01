@@ -44,6 +44,10 @@ namespace sts::search {
         std::vector<Action> bestActionSequence;
         std::default_random_engine randGen;
 
+        bool fairRng = false;
+        bool searchPotions = true;
+        std::int64_t simCounter = 0;
+
         std::vector<Node*> searchStack;
         std::vector<Action> actionStack;
 

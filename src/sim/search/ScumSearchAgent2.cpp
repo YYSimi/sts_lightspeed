@@ -70,6 +70,11 @@ void search::ScumSearchAgent2::playoutBattle(BattleContext &bc) {
                                               (bossSimulationMultiplier * simulationCountBase) : simulationCountBase;
 
         search::BattleScumSearcher2 searcher(bc);
+        searcher.fairRng = fairRng;
+        searcher.searchPotions = searchPotions;
+        if (explorationParameter >= 0) {
+            searcher.explorationParameter = explorationParameter;
+        }
         searcher.search(simulationCount);
 
         if (searcher.outcomePlayerHp > bestOutcomePlayerHp)
@@ -82,7 +87,14 @@ void search::ScumSearchAgent2::playoutBattle(BattleContext &bc) {
 
         simulationCountTotal += searcher.root.simulationCount;
 
-        if (bestOutcomePlayerHp > 0) {
+        if (fairRng) {
+            // Fair RNG: take only 1 action (most-visited at root), then re-search.
+            // Tree deeper than root conflates different RNG states, so only root is reliable.
+            auto savedSteps = stepsNoSolution;
+            stepsNoSolution = 1;
+            stepThroughSearchTree(bc, searcher);
+            stepsNoSolution = savedSteps;
+        } else if (bestOutcomePlayerHp > 0) {
             stepThroughSolution(bc, bestActions);
         } else {
             stepThroughSearchTree(bc, searcher);

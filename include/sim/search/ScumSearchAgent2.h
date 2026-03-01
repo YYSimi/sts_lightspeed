@@ -26,6 +26,9 @@ namespace sts::search {
 
         bool printActions = false;
         bool printLogs = false;
+        bool fairRng = false;
+        bool searchPotions = true;
+        double explorationParameter = -1;  // -1 = use searcher default
 
         int simulationCountBase = 50000;
         double bossSimulationMultiplier = 3;

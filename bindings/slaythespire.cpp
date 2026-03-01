@@ -94,6 +94,24 @@ struct PyBattleContext {
         oss << bc;
         return oss.str();
     }
+
+    static std::string debug_layout() {
+        std::ostringstream oss;
+        oss << "sizeof(PyBattleContext) = " << sizeof(PyBattleContext) << "\n";
+        oss << "sizeof(BattleContext) = " << sizeof(BattleContext) << "\n";
+        BattleContext bc2;
+        char* base = reinterpret_cast<char*>(&bc2);
+        oss << "potionCount offset: " << (reinterpret_cast<char*>(&bc2.potionCount) - base) << "\n";
+        oss << "potionCapacity offset: " << (reinterpret_cast<char*>(&bc2.potionCapacity) - base) << "\n";
+        oss << "potions offset: " << (reinterpret_cast<char*>(&bc2.potions) - base) << "\n";
+        oss << "potions end: " << (reinterpret_cast<char*>(&bc2.potions[4]) - base + sizeof(Potion)) << "\n";
+        oss << "turn offset: " << (reinterpret_cast<char*>(&bc2.turn) - base) << "\n";
+        oss << "player offset: " << (reinterpret_cast<char*>(&bc2.player) - base) << "\n";
+        oss << "miscBits offset: " << (reinterpret_cast<char*>(&bc2.miscBits) - base) << "\n";
+        oss << "sizeof(Potion): " << sizeof(Potion) << "\n";
+        oss << "sizeof(Player): " << sizeof(Player) << "\n";
+        return oss.str();
+    }
 };
 // ---- end PyBattleContext ----
 
@@ -115,7 +133,13 @@ PYBIND11_MODULE(slaythespire, m) {
         .def_readwrite("boss_simulation_multiplier", &search::ScumSearchAgent2::bossSimulationMultiplier, "bonus multiplier to the simulation count for boss fights")
         .def_readwrite("pause_on_card_reward", &search::ScumSearchAgent2::pauseOnCardReward, "causes the agent to pause so as to cede control to the user when it encounters a card reward choice")
         .def_readwrite("print_logs", &search::ScumSearchAgent2::printLogs, "when set to true, the agent prints state information as it makes actions")
-        .def("playout", &search::ScumSearchAgent2::playout);
+        .def_readwrite("fair_rng", &search::ScumSearchAgent2::fairRng, "resample RNG per simulation for fair MCTS (no perfect foresight)")
+        .def_readwrite("search_potions", &search::ScumSearchAgent2::searchPotions, "include potion actions in MCTS search tree (disable to reduce crashes)")
+        .def_readwrite("exploration_parameter", &search::ScumSearchAgent2::explorationParameter, "UCB1 exploration constant (-1 = default 3*sqrt(2))")
+        .def("playout", &search::ScumSearchAgent2::playout)
+        .def("playout_battle", [](search::ScumSearchAgent2 &a, PyBattleContext &pbc) {
+            a.playoutBattle(pbc.bc);
+        }, "play out a complete battle using MCTS search");
 
     pybind11::class_<GameContext> gameContext(m, "GameContext");
     gameContext.def(pybind11::init<CharacterClass, std::uint64_t, int>())
@@ -1200,7 +1224,8 @@ PYBIND11_MODULE(slaythespire, m) {
             [](const PyBattleContext &pbc) { return pbc.bc.potionCount; })
         .def("get_potion",
             [](const PyBattleContext &pbc, int idx) { return pbc.bc.potions[idx]; })
-        .def("__repr__", &PyBattleContext::repr);
+        .def("__repr__", &PyBattleContext::repr)
+        .def_static("debug_layout", &PyBattleContext::debug_layout);
 
     // ---- New enums ----
 
