@@ -324,7 +324,8 @@ void Player::wouldDie(BattleContext &bc) {
     // assume fairy and lizard tail heal for greater than zero - max hp is not less than ~8
     curHp = 0;
     if  (!hasRelic<RelicId::MARK_OF_THE_BLOOM>()) {
-        for (int i = 0; i < bc.potionCapacity; i++) {
+        const int potionCap = bc.potionCapacity < 5 ? bc.potionCapacity : 5;
+        for (int i = 0; i < potionCap; i++) {
             if (bc.potions[i] == Potion::FAIRY_POTION) {
                 bc.discardPotion(i);
                 const int healAmount = std::max(

@@ -139,7 +139,8 @@ void BattleSimulator::doSetCommand(const std::string &cmd) {
 }
 
 void BattleSimulator::printPotionActions(std::ostream &os) const {
-    for (int i = 0; i < bc->potionCapacity; ++i) {
+    const int potionCap = bc->potionCapacity < 5 ? bc->potionCapacity : 5;
+    for (int i = 0; i < potionCap; ++i) {
         const auto p = bc->potions[i];
         if (p == Potion::EMPTY_POTION_SLOT ||
             p == Potion::FAIRY_POTION) {

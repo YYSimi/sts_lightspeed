@@ -309,7 +309,8 @@ void search::BattleScumSearcher2::enumeratePotionActions(search::BattleScumSearc
     const auto hasValidTarget = bc.monsters.getTargetableCount() > 0;
 
     int foundPotions = 0;
-    for (int pIdx = 0; pIdx < bc.potionCapacity; ++pIdx) {
+    const int potionCap = bc.potionCapacity < 5 ? bc.potionCapacity : 5;
+    for (int pIdx = 0; pIdx < potionCap; ++pIdx) {
 
         const auto p = bc.potions[pIdx];
         if (p == Potion::EMPTY_POTION_SLOT) {

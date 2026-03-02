@@ -1240,7 +1240,8 @@ void GameContext::obtainPotion(Potion p) {
         return;
     }
 
-    for (int i = 0; i < potionCapacity; ++i) {
+    const int potionCap = potionCapacity < 5 ? potionCapacity : 5;
+    for (int i = 0; i < potionCap; ++i) {
         if (potions[i] == Potion::EMPTY_POTION_SLOT) {
             potions[i] = p;
             ++potionCount;
@@ -1422,6 +1423,7 @@ bool GameContext::obtainRelic(RelicId r) {
 
         case RelicId::POTION_BELT: {
             potionCapacity += 2;
+            if (potionCapacity > 5) potionCapacity = 5;
             potions[potionCapacity-1] = Potion::EMPTY_POTION_SLOT;
             potions[potionCapacity-2] = Potion::EMPTY_POTION_SLOT;
             break;
@@ -1696,7 +1698,8 @@ int GameContext::getRandomPlayerPotionIdx() {
     }
 
     fixed_list<int, 5> potionIdxs;
-    for (int i = 0; i < potionCapacity; ++i) {
+    const int potionCap = potionCapacity < 5 ? potionCapacity : 5;
+    for (int i = 0; i < potionCap; ++i) {
         if(potions[i] != Potion::EMPTY_POTION_SLOT) {
             potionIdxs.push_back(i);
         }
@@ -2188,7 +2191,8 @@ void GameContext::drinkPotion(Potion p) {
 
         case Potion::ENTROPIC_BREW: {
             Potion randPotions[5];
-            for (int i = 0 ; i < potionCapacity; ++i) {
+            const int potionCap = potionCapacity < 5 ? potionCapacity : 5;
+            for (int i = 0 ; i < potionCap; ++i) {
                 randPotions[i] = returnRandomPotion(potionRng, cc);
                 if (potions[i] == Potion::EMPTY_POTION_SLOT) {
                     potions[i] = randPotions[i];

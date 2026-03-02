@@ -287,7 +287,8 @@ void search::SimpleAgent::playout(GameContext &gc) {
 bool search::SimpleAgent::playPotion(BattleContext &bc) {
     bool usedAll = true;
     int i = 0;
-    for (; i < bc.potionCapacity; ++i) {
+    const int potionCap = bc.potionCapacity < 5 ? bc.potionCapacity : 5;
+    for (; i < potionCap; ++i) {
         auto p = bc.potions[i];
 
         bool canDrink = !(p == sts::Potion::FAIRY_POTION || p == sts::Potion::EMPTY_POTION_SLOT);

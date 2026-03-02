@@ -2219,7 +2219,8 @@ void BattleContext::obtainPotion(Potion p) {
         return; // no empty potion slots
     }
 
-    for (int i = 0; i < potionCapacity; ++i) {
+    const int potionCap = potionCapacity < 5 ? potionCapacity : 5;
+    for (int i = 0; i < potionCap; ++i) {
         if (potions[i] == Potion::EMPTY_POTION_SLOT) {
             ++potionCount;
             potions[i] = p;
@@ -2312,7 +2313,8 @@ void BattleContext::drinkPotion(int idx, int target) {
             break;
 
         case Potion::ENTROPIC_BREW: {
-            for (int i = 0; i < potionCapacity; ++i) {
+            const int potionCap = potionCapacity < 5 ? potionCapacity : 5;
+            for (int i = 0; i < potionCap; ++i) {
                 Potion randomPotion = returnRandomPotion(potionRng, player.cc, true);
                 obtainPotion(randomPotion);
             }
@@ -3120,7 +3122,8 @@ namespace sts {
         os << s << "potionCapacity: " << bc.potionCapacity;
 
         os << s << "{ ";
-        for (int i = 0; i < bc.potionCapacity; ++i) {
+        const int potionCap = bc.potionCapacity < 5 ? bc.potionCapacity : 5;
+        for (int i = 0; i < potionCap; ++i) {
             os << getPotionName(bc.potions[i]) << ", ";
         }
         os << "}\n";

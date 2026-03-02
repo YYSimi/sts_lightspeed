@@ -113,7 +113,8 @@ namespace sts {
 
     void printPotionInfo(std::ostream &os, const GameContext &gc) {
         os << "potions: {";
-        for (int i = 0; i < gc.potionCapacity; ++i) {
+        const int potionCap = gc.potionCapacity < 5 ? gc.potionCapacity : 5;
+        for (int i = 0; i < potionCap; ++i) {
             os << getPotionName(gc.potions[i]) << ",";
         }
         os  << "}\n";
