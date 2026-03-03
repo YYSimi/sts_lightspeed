@@ -12,9 +12,11 @@
 
 #include "sim/ConsoleSimulator.h"
 #include "sim/search/ScumSearchAgent2.h"
+#include "sim/search/BattleScumSearcher2.h"
 #include "sim/SimHelpers.h"
 #include "sim/PrintHelpers.h"
 #include "game/Game.h"
+#include "constants/MonsterEncounters.h"
 
 #include "slaythespire.h"
 
@@ -135,15 +137,131 @@ PYBIND11_MODULE(slaythespire, m) {
         .def_readwrite("print_logs", &search::ScumSearchAgent2::printLogs, "when set to true, the agent prints state information as it makes actions")
         .def_readwrite("fair_rng", &search::ScumSearchAgent2::fairRng, "resample RNG per simulation for fair MCTS (no perfect foresight)")
         .def_readwrite("search_potions", &search::ScumSearchAgent2::searchPotions, "include potion actions in MCTS search tree (disable to reduce crashes)")
+        .def_readwrite("skip_hallway_potions", &search::ScumSearchAgent2::skipHallwayPotions, "only search potions for elite/boss fights (reduces action space for hallway fights)")
         .def_readwrite("exploration_parameter", &search::ScumSearchAgent2::explorationParameter, "UCB1 exploration constant (-1 = default 3*sqrt(2))")
         .def_readwrite("heuristic_playouts", &search::ScumSearchAgent2::heuristicPlayouts, "use SimpleAgent heuristic instead of random for MCTS playouts")
         .def("playout", &search::ScumSearchAgent2::playout)
         .def("playout_battle", [](search::ScumSearchAgent2 &a, PyBattleContext &pbc) {
             a.playoutBattle(pbc.bc);
-        }, "play out a complete battle using MCTS search");
+        }, "play out a complete battle using MCTS search")
+        .def("search_step", [](search::ScumSearchAgent2 &a, PyBattleContext &pbc, bool execute) -> pybind11::dict {
+            auto &bc = pbc.bc;
+            pybind11::dict result;
+
+            if (bc.outcome != Outcome::UNDECIDED) {
+                result["type"] = "done";
+                return result;
+            }
+
+            // Determine simulation count (boss multiplier)
+            const std::int64_t simulationCount = isBossEncounter(bc.encounter) ?
+                (static_cast<std::int64_t>(a.bossSimulationMultiplier * a.simulationCountBase)) : a.simulationCountBase;
+
+            // Create searcher with agent settings
+            search::BattleScumSearcher2 searcher(bc);
+            searcher.fairRng = a.fairRng;
+            searcher.searchPotions = a.searchPotions;
+            if (a.skipHallwayPotions && !isEliteOrBossEncounter(bc.encounter)) {
+                searcher.searchPotions = false;
+            }
+            searcher.useHeuristicPlayouts = a.heuristicPlayouts;
+            if (a.explorationParameter >= 0) {
+                searcher.explorationParameter = a.explorationParameter;
+            }
+
+            // Run MCTS search
+            searcher.search(simulationCount);
+
+            // Find most-visited action at root
+            std::int64_t maxSimulations = -1;
+            const search::BattleScumSearcher2::Edge *maxEdge = nullptr;
+            for (const auto &edge : searcher.root.edges) {
+                if (edge.node.simulationCount > maxSimulations) {
+                    maxSimulations = edge.node.simulationCount;
+                    maxEdge = &edge;
+                }
+            }
+
+            if (maxEdge == nullptr) {
+                result["type"] = "done";
+                return result;
+            }
+
+            // Extract action info before executing
+            auto action = maxEdge->action;
+            auto actionType = action.getActionType();
+
+            switch (actionType) {
+                case search::ActionType::CARD: {
+                    int handIdx = action.getSourceIdx();
+                    int targetIdx = action.getTargetIdx();
+                    result["type"] = "card";
+                    result["hand_idx"] = handIdx;
+                    result["target_idx"] = targetIdx;
+                    if (handIdx >= 0 && handIdx < bc.cards.cardsInHand) {
+                        result["card_id"] = static_cast<int>(bc.cards.hand[handIdx].getId());
+                        result["upgraded"] = bc.cards.hand[handIdx].isUpgraded();
+                    }
+                    break;
+                }
+                case search::ActionType::POTION: {
+                    int slot = action.getSourceIdx();
+                    int targetIdx = action.getTargetIdx();
+                    result["type"] = "potion";
+                    result["slot"] = slot;
+                    result["target_idx"] = targetIdx;
+                    if (slot >= 0 && slot < std::min(bc.potionCapacity, 5)) {
+                        result["potion_id"] = static_cast<int>(bc.potions[slot]);
+                    }
+                    break;
+                }
+                case search::ActionType::SINGLE_CARD_SELECT: {
+                    result["type"] = "card_select";
+                    result["select_idx"] = action.getSelectIdx();
+                    break;
+                }
+                case search::ActionType::MULTI_CARD_SELECT: {
+                    result["type"] = "multi_card_select";
+                    auto idxs = action.getSelectedIdxs();
+                    pybind11::list pyIdxs;
+                    for (int idx : idxs) { pyIdxs.append(idx); }
+                    result["select_idxs"] = pyIdxs;
+                    break;
+                }
+                case search::ActionType::END_TURN: {
+                    result["type"] = "end_turn";
+                    break;
+                }
+            }
+
+            // Get human-readable description
+            std::ostringstream oss;
+            action.printDesc(oss, bc);
+            result["description"] = oss.str();
+
+            // Store action bits for deferred execution
+            result["action_bits"] = static_cast<std::int32_t>(action.bits);
+
+            // Execute the action on the battle context (unless deferred)
+            if (execute) {
+                action.execute(bc);
+            }
+
+            return result;
+        }, pybind11::arg("bc"), pybind11::arg("execute") = true,
+           "Run one MCTS search step: search, pick best action, optionally execute it, return action info dict")
+
+        .def("execute_action", [](search::ScumSearchAgent2 &a, PyBattleContext &pbc, int bits) {
+            auto &bc = pbc.bc;
+            search::Action action;
+            action.bits = static_cast<std::int32_t>(bits);
+            action.execute(bc);
+        }, pybind11::arg("bc"), pybind11::arg("action_bits"),
+           "Execute a previously returned action (by its action_bits) on the battle context");
 
     pybind11::class_<GameContext> gameContext(m, "GameContext");
     gameContext.def(pybind11::init<CharacterClass, std::uint64_t, int>())
+        .def("copy", [](const GameContext &gc) { return GameContext(gc); }, "creates a deep copy of the game context")
         .def("pick_reward_card", &sts::py::pickRewardCard, "choose to obtain the card at the specified index in the card reward list")
         .def("skip_reward_cards", &sts::py::skipRewardCards, "choose to skip the card reward (increases max_hp by 2 with singing bowl)")
         .def("get_card_reward", &sts::py::getCardReward, "return the current card reward list")
@@ -398,7 +516,60 @@ PYBIND11_MODULE(slaythespire, m) {
         .def("get_potion", [](const GameContext &gc, int idx) { return gc.potions[idx]; },
              "Potion enum value at slot idx")
         .def("drink_potion", [](GameContext &gc, int idx) { gc.drinkPotionAtIdx(idx); })
-        .def("discard_potion", [](GameContext &gc, int idx) { gc.discardPotionAtIdx(idx); });
+        .def("discard_potion", [](GameContext &gc, int idx) { gc.discardPotionAtIdx(idx); })
+        .def("set_potion", [](GameContext &gc, int slot, Potion p) {
+            if (slot < 0 || slot >= std::min(gc.potionCapacity, 5)) return;
+            gc.potions[slot] = p;
+            // recount
+            int count = 0;
+            for (int i = 0; i < std::min(gc.potionCapacity, 5); ++i) {
+                if (gc.potions[i] != Potion::EMPTY_POTION_SLOT) ++count;
+            }
+            gc.potionCount = count;
+        }, pybind11::arg("slot"), pybind11::arg("potion"),
+           "Set potion at slot idx and update count")
+        .def("set_potions", [](GameContext &gc, std::vector<Potion> potions) {
+            int cap = std::min(gc.potionCapacity, 5);
+            int count = 0;
+            for (int i = 0; i < cap; ++i) {
+                Potion p = (i < (int)potions.size()) ? potions[i] : Potion::EMPTY_POTION_SLOT;
+                gc.potions[i] = p;
+                if (p != Potion::EMPTY_POTION_SLOT) ++count;
+            }
+            gc.potionCount = count;
+        }, pybind11::arg("potions"),
+           "Replace all potion slots from a list of Potion enums")
+        .def("sync_deck", [](GameContext &gc, std::vector<Card> cards) {
+            gc.deck.cards.clear();
+            std::array<int,4> typeCounts = {0,0,0,0};
+            for (auto &c : cards) {
+                gc.deck.cards.push_back(c);
+                int t = static_cast<int>(c.getType());
+                if (t >= 0 && t < 4) typeCounts[t]++;
+            }
+            gc.deck.cardTypeCounts = typeCounts;
+            gc.deck.upgradeableCount = 0;
+            gc.deck.transformableCount = 0;
+            for (int i = 0; i < gc.deck.size(); ++i) {
+                if (gc.deck.cards[i].canUpgrade()) gc.deck.upgradeableCount++;
+                if (gc.deck.cards[i].canTransform()) gc.deck.transformableCount++;
+            }
+        }, pybind11::arg("cards"),
+           "Replace entire deck with given cards list")
+        .def("add_relic", [](GameContext &gc, RelicId r) {
+            if (!gc.relics.has(r)) {
+                gc.relics.add({r, 0});
+            }
+        }, pybind11::arg("relic_id"),
+           "Add a relic if not already present")
+        .def("remove_relic", [](GameContext &gc, RelicId r) {
+            gc.relics.remove(r);
+        }, pybind11::arg("relic_id"),
+           "Remove a relic by ID")
+        .def("has_relic", [](const GameContext &gc, RelicId r) {
+            return gc.relics.has(r);
+        }, pybind11::arg("relic_id"),
+           "Check if a relic is present");
 
     pybind11::class_<RelicInstance> relic(m, "Relic");
     relic.def_readwrite("id", &RelicInstance::id)
@@ -1220,11 +1391,72 @@ PYBIND11_MODULE(slaythespire, m) {
             [](const PyBattleContext &pbc, int idx) {
                 return pbc.bc.cards.hand[idx].canUseOnAnyTarget(pbc.bc);
             })
+        // Draw pile card accessors
+        .def("draw_pile_card_id",
+            [](const PyBattleContext &pbc, int idx) { return pbc.bc.cards.drawPile[idx].getId(); })
+        .def("draw_pile_card_upgraded",
+            [](const PyBattleContext &pbc, int idx) { return pbc.bc.cards.drawPile[idx].isUpgraded(); })
+        // Discard pile card accessors
+        .def("discard_pile_card_id",
+            [](const PyBattleContext &pbc, int idx) { return pbc.bc.cards.discardPile[idx].getId(); })
+        .def("discard_pile_card_upgraded",
+            [](const PyBattleContext &pbc, int idx) { return pbc.bc.cards.discardPile[idx].isUpgraded(); })
+        // Exhaust pile accessors
+        .def_property_readonly("exhaust_pile_size",
+            [](const PyBattleContext &pbc) { return (int)pbc.bc.cards.exhaustPile.size(); })
+        .def("exhaust_pile_card_id",
+            [](const PyBattleContext &pbc, int idx) { return pbc.bc.cards.exhaustPile[idx].getId(); })
+        .def("exhaust_pile_card_upgraded",
+            [](const PyBattleContext &pbc, int idx) { return pbc.bc.cards.exhaustPile[idx].isUpgraded(); })
+        // Player status effects
+        .def("player_has_status",
+            [](const PyBattleContext &pbc, int status_id) {
+                return pbc.bc.player.hasStatusRuntime(static_cast<PlayerStatus>(status_id));
+            }, pybind11::arg("status_id"),
+            "Check if player has a status effect (by PlayerStatus enum int value)")
+        .def("player_get_status",
+            [](const PyBattleContext &pbc, int status_id) {
+                return pbc.bc.player.getStatusRuntime(static_cast<PlayerStatus>(status_id));
+            }, pybind11::arg("status_id"),
+            "Get player status effect value (by PlayerStatus enum int value)")
         // Potions (in combat)
         .def_property_readonly("potion_count",
             [](const PyBattleContext &pbc) { return pbc.bc.potionCount; })
         .def("get_potion",
             [](const PyBattleContext &pbc, int idx) { return pbc.bc.potions[idx]; })
+        // --- Setters for per-turn sync ---
+        .def("set_player_hp",
+            [](PyBattleContext &pbc, int hp) { pbc.bc.player.curHp = hp; },
+            "Set player current HP")
+        .def("set_player_max_hp",
+            [](PyBattleContext &pbc, int hp) { pbc.bc.player.maxHp = hp; },
+            "Set player max HP")
+        .def("set_player_block",
+            [](PyBattleContext &pbc, int block) { pbc.bc.player.block = block; },
+            "Set player block")
+        .def("set_player_energy",
+            [](PyBattleContext &pbc, int energy) { pbc.bc.player.energy = energy; },
+            "Set player energy")
+        .def("set_player_strength",
+            [](PyBattleContext &pbc, int str) { pbc.bc.player.strength = str; },
+            "Set player strength")
+        .def("set_player_dexterity",
+            [](PyBattleContext &pbc, int dex) { pbc.bc.player.dexterity = dex; },
+            "Set player dexterity")
+        .def("set_monster_hp",
+            [](PyBattleContext &pbc, int idx, int hp) {
+                if (idx >= 0 && idx < pbc.bc.monsters.monsterCount) {
+                    pbc.bc.monsters.arr[idx].curHp = hp;
+                }
+            }, pybind11::arg("idx"), pybind11::arg("hp"),
+            "Set monster current HP at index")
+        .def("set_monster_block",
+            [](PyBattleContext &pbc, int idx, int block) {
+                if (idx >= 0 && idx < pbc.bc.monsters.monsterCount) {
+                    pbc.bc.monsters.arr[idx].block = block;
+                }
+            }, pybind11::arg("idx"), pybind11::arg("block"),
+            "Set monster block at index")
         .def("__repr__", &PyBattleContext::repr)
         .def_static("debug_layout", &PyBattleContext::debug_layout);
 
