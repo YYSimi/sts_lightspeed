@@ -146,6 +146,7 @@ void sortCardOptions(const GameContext &gc, fixed_list<int,96> &sortedCardIdxs) 
 //}
 
 int search::SimpleAgent::getIncomingDamage(const BattleContext &bc) const {
+    int act = curGameContext ? curGameContext->act : (bc.floorNum <= 17 ? 1 : (bc.floorNum <= 34 ? 2 : 3));
     int incomingDamage = 0;
     for (int i = 0; i < bc.monsters.monsterCount; ++i) {
         const auto &m = bc.monsters.arr[i];
@@ -155,7 +156,7 @@ int search::SimpleAgent::getIncomingDamage(const BattleContext &bc) const {
 
         DamageInfo dInfo;
         if (bc.player.hasRelic<R::RUNIC_DOME>()) {
-            dInfo = {5*curGameContext->act, 1};
+            dInfo = {5*act, 1};
 
         } else {
             dInfo = m.getMoveBaseDamage(bc);
@@ -313,7 +314,9 @@ bool search::SimpleAgent::playPotion(BattleContext &bc) {
 
 void search::SimpleAgent::playoutBattle(BattleContext &bc) {
     bool usedPotions = !isBossEncounter(bc.encounter);
-    while (bc.outcome == Outcome::UNDECIDED) {
+    int safetyCounter = 0;
+    while (bc.outcome == Outcome::UNDECIDED && safetyCounter < 500) {
+        ++safetyCounter;
         if (bc.inputState == InputState::CARD_SELECT) {
             stepBattleCardSelect(bc);
 
@@ -325,7 +328,7 @@ void search::SimpleAgent::playoutBattle(BattleContext &bc) {
                 usedPotions = playPotion(bc);
             }
         } else {
-            assert(false);
+            break;  // graceful exit for unexpected InputStates during MCTS playouts
         }
     }
 }
@@ -373,7 +376,8 @@ void search::SimpleAgent::stepBattleCardPlay(BattleContext &bc) {
     }
 
     const int incomingDamage = getIncomingDamage(bc);
-    if (bc.player.block > (incomingDamage - curGameContext->act - 4)) {
+    int act = curGameContext ? curGameContext->act : (bc.floorNum <= 17 ? 1 : (bc.floorNum <= 34 ? 2 : 3));
+    if (bc.player.block > (incomingDamage - act - 4)) {
         fixed_list<int,10> offensiveCards;
         for (auto handIdx : nonZeroCostCards) {
             const auto &c = bc.cards.hand[handIdx];

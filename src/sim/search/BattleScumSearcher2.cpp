@@ -3,6 +3,7 @@
 //
 
 #include "sim/search/BattleScumSearcher2.h"
+#include "sim/search/SimpleAgent.h"
 #include "sim/search/ExpertKnowledge.h"
 
 #include <utility>
@@ -83,8 +84,9 @@ void search::BattleScumSearcher2::step() {
         actionStack.push_back(edgeTaken.action);
         searchStack.push_back(&edgeTaken.node);
 
-        // Random playout from here
-        playoutRandom(curState, actionStack);
+        // Playout from here
+        if (useHeuristicPlayouts) playoutHeuristic(curState, actionStack);
+        else playoutRandom(curState, actionStack);
         updateFromPlayout(searchStack, actionStack, curState);
         return;
     }
@@ -111,7 +113,8 @@ void search::BattleScumSearcher2::step() {
             actionStack.push_back(edgeTaken.action);
             searchStack.push_back(&edgeTaken.node);
 
-            playoutRandom(curState, actionStack);
+            if (useHeuristicPlayouts) playoutHeuristic(curState, actionStack);
+            else playoutRandom(curState, actionStack);
             updateFromPlayout(searchStack, actionStack, curState);
             return;
 
@@ -212,6 +215,14 @@ void search::BattleScumSearcher2::playoutRandom(BattleContext &state, std::vecto
         action.execute(state);
 
         tempNode.edges.clear();
+    }
+}
+
+void search::BattleScumSearcher2::playoutHeuristic(BattleContext &state, std::vector<Action> &actionStack) {
+    SimpleAgent agent;
+    agent.playoutBattle(state);
+    for (auto bits : agent.actionHistory) {
+        actionStack.push_back(Action(bits));
     }
 }
 

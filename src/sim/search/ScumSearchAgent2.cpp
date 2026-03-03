@@ -72,6 +72,7 @@ void search::ScumSearchAgent2::playoutBattle(BattleContext &bc) {
         search::BattleScumSearcher2 searcher(bc);
         searcher.fairRng = fairRng;
         searcher.searchPotions = searchPotions;
+        searcher.useHeuristicPlayouts = heuristicPlayouts;
         if (explorationParameter >= 0) {
             searcher.explorationParameter = explorationParameter;
         }

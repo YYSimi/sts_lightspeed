@@ -28,6 +28,7 @@ namespace sts::search {
         bool printLogs = false;
         bool fairRng = false;
         bool searchPotions = true;
+        bool heuristicPlayouts = false;
         double explorationParameter = -1;  // -1 = use searcher default
 
         int simulationCountBase = 50000;

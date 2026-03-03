@@ -6,6 +6,7 @@
 #define STS_LIGHTSPEED_BATTLESCUMSEARCHER2_H
 
 #include "sim/search/Action.h"
+#include "sim/search/SimpleAgent.h"
 
 #include <functional>
 #include <memory>
@@ -46,6 +47,7 @@ namespace sts::search {
 
         bool fairRng = false;
         bool searchPotions = true;
+        bool useHeuristicPlayouts = false;
         std::int64_t simCounter = 0;
 
         std::vector<Node*> searchStack;
@@ -66,6 +68,7 @@ namespace sts::search {
         int selectFirstActionForLeafNode(const Node &leafNode);
 
         void playoutRandom(BattleContext &state, std::vector<Action> &actionStack);
+        void playoutHeuristic(BattleContext &state, std::vector<Action> &actionStack);
 
         void enumerateActionsForNode(Node &node, const BattleContext &bc);
         void enumerateCardActions(Node &node, const BattleContext &bc);

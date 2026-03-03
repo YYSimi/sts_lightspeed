@@ -136,6 +136,7 @@ PYBIND11_MODULE(slaythespire, m) {
         .def_readwrite("fair_rng", &search::ScumSearchAgent2::fairRng, "resample RNG per simulation for fair MCTS (no perfect foresight)")
         .def_readwrite("search_potions", &search::ScumSearchAgent2::searchPotions, "include potion actions in MCTS search tree (disable to reduce crashes)")
         .def_readwrite("exploration_parameter", &search::ScumSearchAgent2::explorationParameter, "UCB1 exploration constant (-1 = default 3*sqrt(2))")
+        .def_readwrite("heuristic_playouts", &search::ScumSearchAgent2::heuristicPlayouts, "use SimpleAgent heuristic instead of random for MCTS playouts")
         .def("playout", &search::ScumSearchAgent2::playout)
         .def("playout_battle", [](search::ScumSearchAgent2 &a, PyBattleContext &pbc) {
             a.playoutBattle(pbc.bc);
