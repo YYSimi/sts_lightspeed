@@ -157,6 +157,7 @@ PYBIND11_MODULE(slaythespire, m) {
         .def_readwrite("fair_rng", &search::ScumSearchAgent2::fairRng, "resample RNG per simulation for fair MCTS (no perfect foresight)")
         .def_readwrite("search_potions", &search::ScumSearchAgent2::searchPotions, "include potion actions in MCTS search tree (disable to reduce crashes)")
         .def_readwrite("skip_hallway_potions", &search::ScumSearchAgent2::skipHallwayPotions, "only search potions for elite/boss fights (reduces action space for hallway fights)")
+        .def_readwrite("prune_targets", &search::ScumSearchAgent2::pruneTargets, "only search weakest+strongest targets in 3+ monster fights (reduces action space)")
         .def_readwrite("exploration_parameter", &search::ScumSearchAgent2::explorationParameter, "UCB1 exploration constant (-1 = default 3*sqrt(2))")
         .def_readwrite("heuristic_playouts", &search::ScumSearchAgent2::heuristicPlayouts, "use SimpleAgent heuristic instead of random for MCTS playouts")
         .def("set_value_net", [](search::ScumSearchAgent2 &a, search::ValueNet &vn) {
@@ -193,6 +194,7 @@ PYBIND11_MODULE(slaythespire, m) {
             if (a.skipHallwayPotions && !isEliteOrBossEncounter(bc.encounter)) {
                 searcher.searchPotions = false;
             }
+            searcher.pruneTargets = a.pruneTargets;
             searcher.useHeuristicPlayouts = a.heuristicPlayouts;
             searcher.valueNet = a.valueNet;
             searcher.valueNetPlayoutTurns = a.valueNetPlayoutTurns;

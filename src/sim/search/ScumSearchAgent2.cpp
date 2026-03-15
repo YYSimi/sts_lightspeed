@@ -124,6 +124,7 @@ void search::ScumSearchAgent2::playoutBattle(BattleContext &bc) {
         if (skipHallwayPotions && !isEliteOrBossEncounter(bc.encounter)) {
             searcher.searchPotions = false;
         }
+        searcher.pruneTargets = pruneTargets;
         searcher.useHeuristicPlayouts = heuristicPlayouts;
         searcher.valueNet = valueNet;
         searcher.valueNetPlayoutTurns = valueNetPlayoutTurns;

@@ -375,6 +375,35 @@ void search::SimpleAgent::stepBattleCardPlay(BattleContext &bc) {
         }
     }
 
+    // Encounter-specific: Gremlin Nob gets +2 STR per skill played
+    const bool isNobFight = (bc.encounter == MonsterEncounter::GREMLIN_NOB);
+    if (isNobFight) {
+        auto removeSkills = [&](fixed_list<int,10> &list) {
+            for (int i = list.size()-1; i >= 0; --i) {
+                if (bc.cards.hand[list[i]].getType() == CardType::SKILL) {
+                    list.remove(i);
+                }
+            }
+        };
+        removeSkills(zeroCostNonAttacks);
+        removeSkills(nonZeroCostCards);
+        removeSkills(zeroCost);
+    }
+
+    // Encounter-specific: Book of Stabbing scales damage each turn, prioritize offense
+    const bool isBookFight = (bc.encounter == MonsterEncounter::BOOK_OF_STABBING);
+    if (isBookFight) {
+        fixed_list<int,10> offCards;
+        for (auto handIdx : nonZeroCostCards) {
+            if (!isDefensiveCard.test(static_cast<int>(bc.cards.hand[handIdx].getId()))) {
+                offCards.push_back(handIdx);
+            }
+        }
+        if (!offCards.empty()) {
+            nonZeroCostCards = offCards;
+        }
+    }
+
     const int incomingDamage = getIncomingDamage(bc);
     int act = curGameContext ? curGameContext->act : (bc.floorNum <= 17 ? 1 : (bc.floorNum <= 34 ? 2 : 3));
     if (bc.player.block > (incomingDamage - act - 4)) {

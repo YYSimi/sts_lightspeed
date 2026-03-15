@@ -376,16 +376,40 @@ void search::BattleScumSearcher2::enumerateCardActions(search::BattleScumSearche
 
     std::sort(playableHandIdxs.begin(), playableHandIdxs.end(), [](auto a, auto b) { return a.second < b.second; });
 
+    // Target pruning: with 3+ targetable monsters, only search weakest + strongest
+    int targetableCount = 0;
+    int lowestHpIdx = -1, lowestHp = 10000;
+    int highestHpIdx = -1, highestHp = -1;
+    if (pruneTargets) {
+        for (int tIdx = 0; tIdx < bc.monsters.monsterCount; ++tIdx) {
+            if (bc.monsters.arr[tIdx].isTargetable()) {
+                ++targetableCount;
+                int hp = bc.monsters.arr[tIdx].curHp;
+                if (hp < lowestHp) { lowestHp = hp; lowestHpIdx = tIdx; }
+                if (hp > highestHp) { highestHp = hp; highestHpIdx = tIdx; }
+            }
+        }
+    }
+    const bool doPruneTargets = pruneTargets && (targetableCount >= 3);
+
     for (auto pair : playableHandIdxs) {
         const auto handIdx = pair.first;
         const auto &c = bc.cards.hand[handIdx];
 
         if (c.requiresTarget()) {
-            for (int tIdx = bc.monsters.monsterCount-1; tIdx >= 0; --tIdx) {
-                if (!bc.monsters.arr[tIdx].isTargetable()) {
-                    continue;
+            if (doPruneTargets) {
+                // Only enumerate weakest and strongest targets
+                node.edges.push_back({Action(ActionType::CARD, handIdx, lowestHpIdx)});
+                if (highestHpIdx != lowestHpIdx) {
+                    node.edges.push_back({Action(ActionType::CARD, handIdx, highestHpIdx)});
                 }
-                node.edges.push_back({Action(ActionType::CARD, handIdx, tIdx)});
+            } else {
+                for (int tIdx = bc.monsters.monsterCount-1; tIdx >= 0; --tIdx) {
+                    if (!bc.monsters.arr[tIdx].isTargetable()) {
+                        continue;
+                    }
+                    node.edges.push_back({Action(ActionType::CARD, handIdx, tIdx)});
+                }
             }
         } else {
             node.edges.push_back({Action(ActionType::CARD, handIdx)});

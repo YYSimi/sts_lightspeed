@@ -56,6 +56,7 @@ namespace sts::search {
 
         bool fairRng = false;
         bool searchPotions = true;
+        bool pruneTargets = false;
         bool useHeuristicPlayouts = false;
         const ValueNet *valueNet = nullptr;  // if set, use MLP evaluation
         int valueNetPlayoutTurns = 0;       // if > 0, do partial heuristic playout before value net eval
