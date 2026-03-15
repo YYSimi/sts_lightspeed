@@ -187,6 +187,18 @@ namespace sts {
         };
     }
 
+    static constexpr bool isEliteEncounter(MonsterEncounter e) {
+        return e == sts::MonsterEncounter::GREMLIN_NOB ||
+               e == sts::MonsterEncounter::LAGAVULIN ||
+               e == sts::MonsterEncounter::THREE_SENTRIES ||
+               e == sts::MonsterEncounter::GREMLIN_LEADER ||
+               e == sts::MonsterEncounter::SLAVERS ||
+               e == sts::MonsterEncounter::BOOK_OF_STABBING ||
+               e == sts::MonsterEncounter::GIANT_HEAD ||
+               e == sts::MonsterEncounter::NEMESIS ||
+               e == sts::MonsterEncounter::REPTOMANCER;
+    }
+
     static constexpr bool isBossEncounter(MonsterEncounter e) {
         return e == sts::MonsterEncounter::SLIME_BOSS ||
                e == sts::MonsterEncounter::HEXAGHOST ||
@@ -198,6 +210,10 @@ namespace sts {
                e == sts::MonsterEncounter::TIME_EATER ||
                e == sts::MonsterEncounter::AWAKENED_ONE ||
                e == sts::MonsterEncounter::THE_HEART;
+    }
+
+    static constexpr bool isEliteOrBossEncounter(MonsterEncounter e) {
+        return isEliteEncounter(e) || isBossEncounter(e);
     }
 
 

@@ -3,6 +3,7 @@
 //
 
 #include "sim/search/ScumSearchAgent2.h"
+#include "sim/search/ValueNet.h"
 
 #include <sim/search/ExpertKnowledge.h>
 #include <game/Game.h>
@@ -38,6 +39,19 @@ void search::ScumSearchAgent2::playout(GameContext &gc) {
             bc = BattleContext();
             bc.init(gc);
 
+            // Update value net context from GameContext before each combat
+            if (valueNet) {
+                valueNet->setAct(gc.act);
+                std::array<float, search::VN_NUM_RELIC_IDS> flags{};
+                for (const auto &r : gc.relics.relics) {
+                    int id = static_cast<int>(r.id);
+                    if (id >= 0 && id < search::VN_NUM_RELIC_IDS) {
+                        flags[id] = 1.0f;
+                    }
+                }
+                valueNet->setRelicFlags(flags);
+            }
+
             playoutBattle(bc);
             bc.exitBattle(gc);
             continue;
@@ -61,7 +75,42 @@ static void printHelper(const BattleContext &bc, const search::Action &a) {
     std::cout << bc << std::endl;
 }
 
+void search::ScumSearchAgent2::playoutBattleValueNet(BattleContext &bc) {
+    int safetyCounter = 0;
+    int totalLeaves = 0;
+    while (bc.outcome == Outcome::UNDECIDED && safetyCounter < 500) {
+        ++safetyCounter;
+
+        search::BattleScumSearcher2 searcher(bc);
+        searcher.valueNet = valueNet;
+        searcher.searchPotions = searchPotions;
+        if (skipHallwayPotions && !isEliteOrBossEncounter(bc.encounter)) {
+            searcher.searchPotions = false;
+        }
+
+        auto result = searcher.searchBatchedGreedy();
+        if (result.bestActions.empty()) break;
+        totalLeaves += result.leavesEvaluated;
+
+        for (auto &a : result.bestActions) {
+            if (printLogs) {
+                a.printDesc(std::cout, bc) << std::endl;
+            }
+            takeAction(bc, a);
+        }
+    }
+
+    if (safetyCounter >= 500) {
+        std::cerr << "[VN] battle safety limit: " << totalLeaves << " total leaves" << std::endl;
+    }
+}
+
 void search::ScumSearchAgent2::playoutBattle(BattleContext &bc) {
+    if (valueNet && valueNetGreedy) {
+        playoutBattleValueNet(bc);
+        return;
+    }
+
     std::vector<search::Action> bestActions;
     int bestOutcomePlayerHp = -1;
 
@@ -72,7 +121,12 @@ void search::ScumSearchAgent2::playoutBattle(BattleContext &bc) {
         search::BattleScumSearcher2 searcher(bc);
         searcher.fairRng = fairRng;
         searcher.searchPotions = searchPotions;
+        if (skipHallwayPotions && !isEliteOrBossEncounter(bc.encounter)) {
+            searcher.searchPotions = false;
+        }
         searcher.useHeuristicPlayouts = heuristicPlayouts;
+        searcher.valueNet = valueNet;
+        searcher.valueNetPlayoutTurns = valueNetPlayoutTurns;
         if (explorationParameter >= 0) {
             searcher.explorationParameter = explorationParameter;
         }

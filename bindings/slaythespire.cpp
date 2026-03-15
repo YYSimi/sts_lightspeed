@@ -13,6 +13,7 @@
 #include "sim/ConsoleSimulator.h"
 #include "sim/search/ScumSearchAgent2.h"
 #include "sim/search/BattleScumSearcher2.h"
+#include "sim/search/ValueNet.h"
 #include "sim/SimHelpers.h"
 #include "sim/PrintHelpers.h"
 #include "game/Game.h"
@@ -129,6 +130,24 @@ PYBIND11_MODULE(slaythespire, m) {
         .def("getObservationMaximums", &NNInterface::getObservationMaximums, "get the defined maximum values of the observation space")
         .def_property_readonly("observation_space_size", []() { return NNInterface::observation_space_size; });
 
+    // ValueNet binding
+    pybind11::class_<search::ValueNet>(m, "ValueNet")
+        .def(pybind11::init<>())
+        .def("load", &search::ValueNet::load, pybind11::arg("model_dir"),
+             "Load model weights from directory with manifest.json")
+        .def_readonly("loaded", &search::ValueNet::loaded)
+        .def("set_act", &search::ValueNet::setAct, pybind11::arg("act"),
+             "Set current act number (1-3)")
+        .def("set_relic_flags", [](search::ValueNet &vn, const std::vector<int> &relicIds) {
+            vn.relicFlags.fill(0.0f);
+            for (int rid : relicIds) {
+                if (rid >= 0 && rid < search::VN_NUM_RELIC_IDS) {
+                    vn.relicFlags[rid] = 1.0f;
+                }
+            }
+        }, pybind11::arg("relic_ids"),
+             "Set relic flags from list of relic ID integers");
+
     pybind11::class_<search::ScumSearchAgent2> agent(m, "Agent");
     agent.def(pybind11::init<>());
     agent.def_readwrite("simulation_count_base", &search::ScumSearchAgent2::simulationCountBase, "number of simulations the agent uses for monte carlo tree search each turn")
@@ -140,6 +159,16 @@ PYBIND11_MODULE(slaythespire, m) {
         .def_readwrite("skip_hallway_potions", &search::ScumSearchAgent2::skipHallwayPotions, "only search potions for elite/boss fights (reduces action space for hallway fights)")
         .def_readwrite("exploration_parameter", &search::ScumSearchAgent2::explorationParameter, "UCB1 exploration constant (-1 = default 3*sqrt(2))")
         .def_readwrite("heuristic_playouts", &search::ScumSearchAgent2::heuristicPlayouts, "use SimpleAgent heuristic instead of random for MCTS playouts")
+        .def("set_value_net", [](search::ScumSearchAgent2 &a, search::ValueNet &vn) {
+            a.valueNet = &vn;
+        }, pybind11::arg("value_net"), "Set value network for batched greedy combat evaluation")
+        .def("clear_value_net", [](search::ScumSearchAgent2 &a) {
+            a.valueNet = nullptr;
+        }, "Clear value network, reverting to playout-based evaluation")
+        .def_readwrite("value_net_playout_turns", &search::ScumSearchAgent2::valueNetPlayoutTurns,
+             "Number of turns to playout with SimpleAgent before value net evaluation (0 = no playout)")
+        .def_readwrite("value_net_greedy", &search::ScumSearchAgent2::valueNetGreedy,
+             "If true, use greedy DFS with value net; if false (default), use value net within MCTS")
         .def("playout", &search::ScumSearchAgent2::playout)
         .def("playout_battle", [](search::ScumSearchAgent2 &a, PyBattleContext &pbc) {
             a.playoutBattle(pbc.bc);
@@ -165,6 +194,8 @@ PYBIND11_MODULE(slaythespire, m) {
                 searcher.searchPotions = false;
             }
             searcher.useHeuristicPlayouts = a.heuristicPlayouts;
+            searcher.valueNet = a.valueNet;
+            searcher.valueNetPlayoutTurns = a.valueNetPlayoutTurns;
             if (a.explorationParameter >= 0) {
                 searcher.explorationParameter = a.explorationParameter;
             }

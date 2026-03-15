@@ -15,6 +15,7 @@
 namespace sts::search {
 
     class BattleScumSearcher2;
+    struct ValueNet;
 
     struct ScumSearchAgent2 {
         std::int64_t simulationCountTotal;
@@ -28,8 +29,12 @@ namespace sts::search {
         bool printLogs = false;
         bool fairRng = false;
         bool searchPotions = true;
+        bool skipHallwayPotions = false;  // If true, only search potions for elite/boss fights
         bool heuristicPlayouts = false;
         double explorationParameter = -1;  // -1 = use searcher default
+        ValueNet *valueNet = nullptr;  // if set, use value net for combat evaluation
+        int valueNetPlayoutTurns = 0;       // if > 0, do partial heuristic playout before value net eval
+        bool valueNetGreedy = false;        // if true, use greedy DFS; if false, use value net within MCTS
 
         int simulationCountBase = 50000;
         double bossSimulationMultiplier = 3;
@@ -44,6 +49,7 @@ namespace sts::search {
 
         // private methods
         void playoutBattle(BattleContext &bc);
+        void playoutBattleValueNet(BattleContext &bc);
 
         void takeAction(GameContext &gc, GameAction a);
         void takeAction(BattleContext &bc, Action a);

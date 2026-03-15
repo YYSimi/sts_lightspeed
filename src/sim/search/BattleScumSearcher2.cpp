@@ -5,6 +5,7 @@
 #include "sim/search/BattleScumSearcher2.h"
 #include "sim/search/SimpleAgent.h"
 #include "sim/search/ExpertKnowledge.h"
+#include "sim/search/ValueNet.h"
 
 #include <utility>
 #include <string>
@@ -84,10 +85,18 @@ void search::BattleScumSearcher2::step() {
         actionStack.push_back(edgeTaken.action);
         searchStack.push_back(&edgeTaken.node);
 
-        // Playout from here
-        if (useHeuristicPlayouts) playoutHeuristic(curState, actionStack);
-        else playoutRandom(curState, actionStack);
-        updateFromPlayout(searchStack, actionStack, curState);
+        if (valueNet) {
+            if (valueNetPlayoutTurns > 0) {
+                // Hybrid: partial heuristic playout, then value net eval
+                playoutHybrid(curState, actionStack, valueNetPlayoutTurns);
+            }
+            updateFromValueNet(searchStack, actionStack, curState);
+        } else {
+            // Playout from here
+            if (useHeuristicPlayouts) playoutHeuristic(curState, actionStack);
+            else playoutRandom(curState, actionStack);
+            updateFromPlayout(searchStack, actionStack, curState);
+        }
         return;
     }
 
@@ -113,9 +122,18 @@ void search::BattleScumSearcher2::step() {
             actionStack.push_back(edgeTaken.action);
             searchStack.push_back(&edgeTaken.node);
 
-            if (useHeuristicPlayouts) playoutHeuristic(curState, actionStack);
-            else playoutRandom(curState, actionStack);
-            updateFromPlayout(searchStack, actionStack, curState);
+            if (valueNet) {
+                if (valueNetPlayoutTurns > 0) {
+                    playoutHybrid(curState, actionStack, valueNetPlayoutTurns);
+                }
+                updateFromValueNet(searchStack, actionStack, curState);
+            } else if (useHeuristicPlayouts) {
+                playoutHeuristic(curState, actionStack);
+                updateFromPlayout(searchStack, actionStack, curState);
+            } else {
+                playoutRandom(curState, actionStack);
+                updateFromPlayout(searchStack, actionStack, curState);
+            }
             return;
 
         } else {
@@ -138,6 +156,34 @@ void search::BattleScumSearcher2::updateFromPlayout(const std::vector<Node *> &s
         bestActionSequence = actionStack;
         bestActionValue = evaluation;
         outcomePlayerHp = endState.player.curHp;
+    }
+
+    if (evaluation < minActionValue) {
+        minActionValue = evaluation;
+    }
+
+    for (auto it = stack.rbegin(); it != stack.rend(); ++it) {
+        auto &node = *(*it);
+        ++node.simulationCount;
+        node.evaluationSum += evaluation;
+    }
+}
+
+void search::BattleScumSearcher2::updateFromValueNet(const std::vector<Node *> &stack, const std::vector<Action> &actionStack, const BattleContext &state) {
+    double evaluation;
+
+    if (state.outcome != Outcome::UNDECIDED) {
+        // Terminal state — use the standard end-state evaluation
+        evaluation = evaluateEndState(state);
+    } else {
+        // Non-terminal — use value network
+        evaluation = valueNet->evaluate(state);
+    }
+
+    if (evaluation > bestActionValue) {
+        bestActionSequence = actionStack;
+        bestActionValue = evaluation;
+        outcomePlayerHp = state.player.curHp;
     }
 
     if (evaluation < minActionValue) {
@@ -221,6 +267,40 @@ void search::BattleScumSearcher2::playoutRandom(BattleContext &state, std::vecto
 void search::BattleScumSearcher2::playoutHeuristic(BattleContext &state, std::vector<Action> &actionStack) {
     SimpleAgent agent;
     agent.playoutBattle(state);
+    for (auto bits : agent.actionHistory) {
+        actionStack.push_back(Action(bits));
+    }
+}
+
+void search::BattleScumSearcher2::playoutHybrid(BattleContext &state, std::vector<Action> &actionStack, int maxTurns) {
+    // Run SimpleAgent for maxTurns end-of-turns, then stop for value net evaluation
+    SimpleAgent agent;
+    bool usedPotions = !isBossEncounter(state.encounter);
+    int turnsCompleted = 0;
+    int safetyCounter = 0;
+    int startTurn = state.turn;
+
+    while (state.outcome == Outcome::UNDECIDED && safetyCounter < 500) {
+        ++safetyCounter;
+
+        // Check if we've completed enough turns
+        if (state.turn - startTurn >= maxTurns) {
+            break;
+        }
+
+        if (state.inputState == InputState::CARD_SELECT) {
+            agent.stepBattleCardSelect(state);
+        } else if (state.inputState == InputState::PLAYER_NORMAL) {
+            if (usedPotions) {
+                agent.stepBattleCardPlay(state);
+            } else {
+                usedPotions = agent.playPotion(state);
+            }
+        } else {
+            break;
+        }
+    }
+
     for (auto bits : agent.actionHistory) {
         actionStack.push_back(Action(bits));
     }
@@ -478,6 +558,99 @@ double search::BattleScumSearcher2::evaluateEndState(const BattleContext &bc) {
         return (1-getNonMinionMonsterCurHpRatio(bc))*10 + aliveScore + energyPenalty + drawBonus + potionScore / 2 + (bc.turn * .2);
     }
 }
+
+// --- Batched Greedy Search (Value Net) ---
+
+search::BattleScumSearcher2::GreedyResult search::BattleScumSearcher2::searchBatchedGreedy(int maxDepth, int maxLeaves) {
+    GreedyResult result;
+
+    if (isTerminalState(*rootState)) {
+        result.bestValue = evaluateEndState(*rootState);
+        return result;
+    }
+
+    if (!valueNet) {
+        return result;
+    }
+
+    std::vector<Action> currentActions;
+    dfsEnumerateTurn(*rootState, currentActions, result, 0, maxDepth, maxLeaves);
+    return result;
+}
+
+void search::BattleScumSearcher2::dfsEnumerateTurn(
+        const BattleContext &state,
+        std::vector<Action> &actions,
+        GreedyResult &result,
+        int depth, int maxDepth, int maxLeaves) {
+
+    // Hit leaf cap or depth cap — evaluate current state
+    if (result.leavesEvaluated >= maxLeaves || depth >= maxDepth) {
+        double val = (state.outcome != Outcome::UNDECIDED)
+            ? evaluateEndState(state)
+            : valueNet->evaluate(state);
+        result.leavesEvaluated++;
+        if (val > result.bestValue) {
+            result.bestValue = val;
+            result.bestActions = actions;
+        }
+        return;
+    }
+
+    // Enumerate legal actions at this state
+    Node tempNode;
+    enumerateActionsForNode(tempNode, state);
+
+    if (tempNode.edges.empty()) {
+        // No actions available — evaluate as leaf
+        double val = (state.outcome != Outcome::UNDECIDED)
+            ? evaluateEndState(state)
+            : valueNet->evaluate(state);
+        result.leavesEvaluated++;
+        if (val > result.bestValue) {
+            result.bestValue = val;
+            result.bestActions = actions;
+        }
+        return;
+    }
+
+    for (auto &edge : tempNode.edges) {
+        if (result.leavesEvaluated >= maxLeaves) break;
+
+        BattleContext child = state;  // copy state
+        try {
+            edge.action.execute(child);
+        } catch (...) {
+            continue;  // Skip branches that cause errors (unusual card interactions)
+        }
+        actions.push_back(edge.action);
+
+        if (child.outcome != Outcome::UNDECIDED) {
+            // Terminal (won or lost) — use ground truth evaluation
+            double val = evaluateEndState(child);
+            result.leavesEvaluated++;
+            if (val > result.bestValue) {
+                result.bestValue = val;
+                result.bestActions = actions;
+            }
+        } else if (edge.action.getActionType() == ActionType::END_TURN) {
+            // End of turn — enemy has acted, evaluate with value net
+            double val = valueNet->evaluate(child);
+            result.leavesEvaluated++;
+            if (val > result.bestValue) {
+                result.bestValue = val;
+                result.bestActions = actions;
+            }
+        } else {
+            // Mid-turn (card play, potion, card select) — recurse
+            dfsEnumerateTurn(child, actions, result, depth + 1, maxDepth, maxLeaves);
+        }
+
+        actions.pop_back();
+    }
+}
+
+// --- End Batched Greedy Search ---
 
 struct LayerStruct {
     const search::BattleScumSearcher2::Node *node;
