@@ -676,6 +676,221 @@ void search::BattleScumSearcher2::dfsEnumerateTurn(
 
 // --- End Batched Greedy Search ---
 
+// --- Full-Turn MCTS Search ---
+
+void search::BattleScumSearcher2::dfsEnumerateTurnLeaves(
+        const BattleContext &state,
+        std::vector<Action> &actions,
+        std::vector<TurnLeaf> &leaves,
+        int depth, int maxLeaves) {
+
+    if (static_cast<int>(leaves.size()) >= maxLeaves || depth >= 50) {
+        // Depth or leaf cap reached — treat current state as a leaf
+        TurnLeaf leaf;
+        leaf.state = state;
+        leaf.actions = actions;
+        leaves.push_back(std::move(leaf));
+        return;
+    }
+
+    // If battle ended (terminal), store as leaf
+    if (state.outcome != Outcome::UNDECIDED) {
+        TurnLeaf leaf;
+        leaf.state = state;
+        leaf.actions = actions;
+        leaves.push_back(std::move(leaf));
+        return;
+    }
+
+    // If in CARD_SELECT state, resolve with SimpleAgent and continue DFS
+    if (state.inputState == InputState::CARD_SELECT) {
+        BattleContext child = state;
+        SimpleAgent agent;
+        agent.stepBattleCardSelect(child);
+        // Record the card select action
+        if (!agent.actionHistory.empty()) {
+            for (auto bits : agent.actionHistory) {
+                actions.push_back(Action(bits));
+            }
+        }
+        dfsEnumerateTurnLeaves(child, actions, leaves, depth + 1, maxLeaves);
+        if (!agent.actionHistory.empty()) {
+            for (size_t i = 0; i < agent.actionHistory.size(); ++i) {
+                actions.pop_back();
+            }
+        }
+        return;
+    }
+
+    // Enumerate legal actions
+    Node tempNode;
+    enumerateActionsForNode(tempNode, state);
+
+    if (tempNode.edges.empty()) {
+        TurnLeaf leaf;
+        leaf.state = state;
+        leaf.actions = actions;
+        leaves.push_back(std::move(leaf));
+        return;
+    }
+
+    for (auto &edge : tempNode.edges) {
+        if (static_cast<int>(leaves.size()) >= maxLeaves) break;
+
+        BattleContext child = state;
+        try {
+            edge.action.execute(child);
+        } catch (...) {
+            continue;
+        }
+        actions.push_back(edge.action);
+
+        if (child.outcome != Outcome::UNDECIDED) {
+            // Terminal — store as leaf
+            TurnLeaf leaf;
+            leaf.state = child;
+            leaf.actions = actions;
+            leaves.push_back(std::move(leaf));
+        } else if (edge.action.getActionType() == ActionType::END_TURN) {
+            // End of turn — this is a complete turn leaf
+            TurnLeaf leaf;
+            leaf.state = child;
+            leaf.actions = actions;
+            leaves.push_back(std::move(leaf));
+        } else {
+            // Mid-turn — recurse
+            dfsEnumerateTurnLeaves(child, actions, leaves, depth + 1, maxLeaves);
+        }
+
+        actions.pop_back();
+    }
+}
+
+void search::BattleScumSearcher2::searchFullTurn(int64_t simulations) {
+    g_debug_scum_search = this;
+
+    if (isTerminalState(*rootState)) {
+        auto evaluation = evaluateEndState(*rootState);
+        outcomePlayerHp = rootState->player.curHp;
+        bestActionSequence = {};
+        root.evaluationSum = evaluation;
+        root.simulationCount = 1;
+        return;
+    }
+
+    // Step 1: DFS enumerate all turn sequences to get leaves
+    std::vector<TurnLeaf> leaves;
+    std::vector<Action> actions;
+    // Cap leaves at simulations/3 to ensure ~3 sims per leaf minimum
+    int maxLeaves = std::max(10, static_cast<int>(simulations / 3));
+    if (maxLeaves > 300) maxLeaves = 300;
+    dfsEnumerateTurnLeaves(*rootState, actions, leaves, 0, maxLeaves);
+
+    if (leaves.empty()) {
+        return;
+    }
+
+    // If only one leaf, no need to simulate
+    if (leaves.size() == 1) {
+        bestActionSequence = leaves[0].actions;
+        outcomePlayerHp = leaves[0].state.player.curHp;
+        root.simulationCount = 1;
+        return;
+    }
+
+    // Step 2: MCTS over leaves — UCB1 select, playout, backpropagate
+    double bestLeafAvg = std::numeric_limits<double>::lowest();
+    double minLeafAvg = std::numeric_limits<double>::max();
+    std::int64_t totalSims = 0;
+
+    for (std::int64_t sim = 0; sim < simulations; ++sim) {
+        // UCB1 select among leaves
+        int selectedLeaf = -1;
+
+        if (totalSims < static_cast<int64_t>(leaves.size())) {
+            // First pass: try each leaf at least once
+            selectedLeaf = static_cast<int>(totalSims % leaves.size());
+        } else {
+            double bestUcb = std::numeric_limits<double>::lowest();
+            double evalRange = bestLeafAvg - minLeafAvg;
+            if (evalRange < 1e-9) evalRange = 1.0;
+
+            for (int i = 0; i < static_cast<int>(leaves.size()); ++i) {
+                auto &leaf = leaves[i];
+                double qualityValue = 0;
+                if (leaf.simulationCount > 0) {
+                    double avgEval = leaf.evaluationSum / leaf.simulationCount;
+                    qualityValue = avgEval / evalRange;
+                }
+                double explorationValue = explorationParameter *
+                    std::sqrt(std::log(static_cast<double>(totalSims) + 1.0) / (leaf.simulationCount + 1));
+                double ucb = qualityValue + explorationValue;
+                if (ucb > bestUcb) {
+                    bestUcb = ucb;
+                    selectedLeaf = i;
+                }
+            }
+        }
+
+        auto &leaf = leaves[selectedLeaf];
+
+        // Copy leaf state and re-randomize RNG for fair mode
+        BattleContext simState = leaf.state;
+        auto simSeed = rootState->seed + rootState->floorNum * 1000000ULL + simCounter;
+        simState.aiRng = Random(simSeed + 1);
+        simState.cardRandomRng = Random(simSeed + 2);
+        simState.miscRng = Random(simSeed + 3);
+        simState.monsterHpRng = Random(simSeed + 4);
+        simState.potionRng = Random(simSeed + 5);
+        simState.shuffleRng = Random(simSeed + 6);
+        ++simCounter;
+
+        // Run heuristic playout if not terminal
+        std::vector<Action> playoutActions;
+        if (simState.outcome == Outcome::UNDECIDED) {
+            playoutHeuristic(simState, playoutActions);
+        }
+
+        double evaluation = evaluateEndState(simState);
+
+        // Update leaf stats
+        leaf.simulationCount++;
+        leaf.evaluationSum += evaluation;
+        ++totalSims;
+
+        // Track best/min for UCB1 normalization
+        double leafAvg = leaf.evaluationSum / leaf.simulationCount;
+        if (leafAvg > bestLeafAvg) bestLeafAvg = leafAvg;
+        if (leafAvg < minLeafAvg) minLeafAvg = leafAvg;
+
+        // Track global best
+        if (evaluation > bestActionValue) {
+            bestActionValue = evaluation;
+            bestActionSequence = leaf.actions;
+            outcomePlayerHp = simState.player.curHp;
+        }
+        if (evaluation < minActionValue) {
+            minActionValue = evaluation;
+        }
+    }
+
+    // Step 3: Pick the leaf with the most visits
+    std::int64_t mostVisits = -1;
+    int bestLeafIdx = 0;
+    for (int i = 0; i < static_cast<int>(leaves.size()); ++i) {
+        if (leaves[i].simulationCount > mostVisits) {
+            mostVisits = leaves[i].simulationCount;
+            bestLeafIdx = i;
+        }
+    }
+
+    bestActionSequence = leaves[bestLeafIdx].actions;
+    outcomePlayerHp = leaves[bestLeafIdx].state.player.curHp;
+    root.simulationCount = totalSims;
+}
+
+// --- End Full-Turn MCTS Search ---
+
 struct LayerStruct {
     const search::BattleScumSearcher2::Node *node;
     BattleContext *bc;

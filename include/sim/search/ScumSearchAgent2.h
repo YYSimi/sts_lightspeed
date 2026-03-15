@@ -31,6 +31,7 @@ namespace sts::search {
         bool searchPotions = true;
         bool skipHallwayPotions = false;  // If true, only search potions for elite/boss fights
         bool pruneTargets = false;        // If true, only search weakest+strongest targets (3+ enemies)
+        bool fullTurnSearch = false;      // If true, DFS enumerate full turns then MCTS over leaves
         bool heuristicPlayouts = false;
         double explorationParameter = -1;  // -1 = use searcher default
         ValueNet *valueNet = nullptr;  // if set, use value net for combat evaluation

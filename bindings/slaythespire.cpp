@@ -160,6 +160,7 @@ PYBIND11_MODULE(slaythespire, m) {
         .def_readwrite("prune_targets", &search::ScumSearchAgent2::pruneTargets, "only search weakest+strongest targets in 3+ monster fights (reduces action space)")
         .def_readwrite("exploration_parameter", &search::ScumSearchAgent2::explorationParameter, "UCB1 exploration constant (-1 = default 3*sqrt(2))")
         .def_readwrite("heuristic_playouts", &search::ScumSearchAgent2::heuristicPlayouts, "use SimpleAgent heuristic instead of random for MCTS playouts")
+        .def_readwrite("full_turn_search", &search::ScumSearchAgent2::fullTurnSearch, "DFS enumerate full turns then MCTS over end-of-turn leaves (requires fair_rng)")
         .def("set_value_net", [](search::ScumSearchAgent2 &a, search::ValueNet &vn) {
             a.valueNet = &vn;
         }, pybind11::arg("value_net"), "Set value network for batched greedy combat evaluation")

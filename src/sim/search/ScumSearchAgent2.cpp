@@ -111,6 +111,40 @@ void search::ScumSearchAgent2::playoutBattle(BattleContext &bc) {
         return;
     }
 
+    // Full-turn search mode: DFS enumerate entire turns, MCTS over end-of-turn leaves
+    if (fullTurnSearch && fairRng) {
+        while (bc.outcome == Outcome::UNDECIDED) {
+            const std::int64_t simulationCount = isBossEncounter(bc.encounter) ?
+                                                  (bossSimulationMultiplier * simulationCountBase) : simulationCountBase;
+
+            search::BattleScumSearcher2 searcher(bc);
+            searcher.fairRng = fairRng;
+            searcher.fullTurnSearch = true;
+            searcher.searchPotions = searchPotions;
+            if (skipHallwayPotions && !isEliteOrBossEncounter(bc.encounter)) {
+                searcher.searchPotions = false;
+            }
+            searcher.pruneTargets = pruneTargets;
+            searcher.useHeuristicPlayouts = heuristicPlayouts;
+            if (explorationParameter >= 0) {
+                searcher.explorationParameter = explorationParameter;
+            }
+            searcher.searchFullTurn(simulationCount);
+
+            simulationCountTotal += searcher.root.simulationCount;
+
+            // Execute the entire winning action sequence
+            for (auto &a : searcher.bestActionSequence) {
+                if (bc.outcome != Outcome::UNDECIDED) break;
+                if (printLogs) {
+                    printHelper(bc, a);
+                }
+                takeAction(bc, a);
+            }
+        }
+        return;
+    }
+
     std::vector<search::Action> bestActions;
     int bestOutcomePlayerHp = -1;
 

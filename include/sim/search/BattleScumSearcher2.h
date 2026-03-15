@@ -41,6 +41,14 @@ namespace sts::search {
             int leavesEvaluated = 0;
         };
 
+        // Leaf state for full-turn MCTS search
+        struct TurnLeaf {
+            BattleContext state;           // end-of-turn state (after END_TURN executed)
+            std::vector<Action> actions;   // action sequence to reach this state
+            double evaluationSum = 0;
+            std::int64_t simulationCount = 0;
+        };
+
         std::unique_ptr<const BattleContext> rootState;
         Node root;
 
@@ -55,6 +63,7 @@ namespace sts::search {
         std::default_random_engine randGen;
 
         bool fairRng = false;
+        bool fullTurnSearch = false;
         bool searchPotions = true;
         bool pruneTargets = false;
         bool useHeuristicPlayouts = false;
@@ -70,6 +79,7 @@ namespace sts::search {
         // public methods
         void search(int64_t simulations);
         void step();
+        void searchFullTurn(int64_t simulations);
         GreedyResult searchBatchedGreedy(int maxDepth = 10, int maxLeaves = 200);
 
         // private helpers
@@ -94,6 +104,10 @@ namespace sts::search {
         // Batched greedy DFS helper
         void dfsEnumerateTurn(const BattleContext &state, std::vector<Action> &actions,
                               GreedyResult &result, int depth, int maxDepth, int maxLeaves);
+
+        // Full-turn DFS enumeration helper
+        void dfsEnumerateTurnLeaves(const BattleContext &state, std::vector<Action> &actions,
+                                    std::vector<TurnLeaf> &leaves, int depth, int maxLeaves);
 
         void printSearchTree(std::ostream &os, int levels);
         void printSearchStack(std::ostream &os, bool skipLast=false);
